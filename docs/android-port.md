@@ -74,3 +74,19 @@ pipeline e composição de gameplay ainda ficam no projeto PC.
 O link completo, o carregamento do XEX, logos, apresentação de frames, dados
 de áudio não silenciosos e entrada XInput touch foram observados no aparelho.
 Esses resultados ainda não aprovam todos os gates de gameplay acima.
+
+## Continuação do checkpoint 2
+
+A factory Android usa explicitamente `rex::graphics::vulkan::VulkanGraphicsSystem`.
+A classe `VulkanNativeGraphicsSystem` do port PC ainda contém stubs: não cria
+presenter nem processador de comandos e não herda o contrato concreto usado
+por `ReXApp` para acessar apresentação e armazenamento de shaders. Ignorar a
+inicialização de shaders evitaria apenas um acesso inválido, sem implementar GPU.
+O alvo Android deixou de compilar esse placeholder; o trabalho de separação
+do renderer PC permanece disponível no projeto original.
+
+No teste no S22, a factory completa passou por `InitializeShaderStorage`,
+iniciou a thread guest com status `00000000`, apresentou loading e menu de
+pausa e respondeu ao touch. A cena 3D ficou preta. O PSS observado chegou a
+aproximadamente 3,3 GB, dos quais 2,7 GB classificados como Graphics. Isso
+continua sendo uma build experimental, sem validação de gameplay.

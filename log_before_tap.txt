@@ -1,0 +1,27 @@
+--------- beginning of system
+10-07 11:54:36.343  2722  2820 W NotifHistoryProto: notification package name (com.android.systemui) not found in string cache
+10-07 11:54:36.343  2722  2820 W NotifHistoryProto: notification package name (com.android.systemui) not found in string cache
+10-07 11:54:36.343  2722  2820 W NotifHistoryProto: notification package name (com.android.systemui) not found in string cache
+10-07 11:54:36.344  2722  2820 W NotifHistoryProto: notification package name (com.openai.chatgpt) not found in string cache
+10-07 11:54:36.344  2722  2820 W NotifHistoryProto: notification package name (com.google.android.googlequicksearchbox) not found in string cache
+10-07 11:54:36.344  2722  2820 W NotifHistoryProto: notification package name (com.android.systemui) not found in string cache
+10-07 11:54:36.344  2722  2820 W NotifHistoryProto: notification package name (com.android.systemui) not found in string cache
+10-07 11:54:36.344  2722  2820 W NotifHistoryProto: notification package name (com.android.systemui) not found in string cache
+10-07 11:54:36.344  2722  2820 W NotifHistoryProto: notification package name (android) not found in string cache
+10-07 11:54:36.344  2722  2820 W NotifHistoryProto: notification package name (com.linkedin.android) not found in string cache
+10-07 11:54:36.344  2722  2820 W NotifHistoryProto: notification package name (com.recarga.recarga) not found in string cache
+10-07 11:54:36.344  2722  2820 W NotifHistoryProto: notification package name (com.openai.chatgpt) not found in string cache
+10-07 11:54:36.344  2722  2820 W NotifHistoryProto: notification package name (com.linkedin.android) not found in string cache
+--------- beginning of main
+10-07 11:54:36.348  1971  1982 E HeatmapThread: ECT Thread time in milliseconds: 1791384876
+10-07 11:54:36.348  1971  1982 D HeatmapThread: !@ batteryplugType : 0
+10-07 11:54:36.348  1971  1982 D HeatmapThread: !@ batteryLevel : 0  batteryTemperature : 0 
+10-07 11:54:36.348  1971  1982 D HeatmapThread: !@ Heatmap currtime: 29856414
+10-07 11:54:36.349  1971  1982 D HeatmapThread: !@ Heatmap prevtime: 29856408
+10-07 11:54:36.349  1971  1982 D HeatmapThread: !@ Heatmap plugstarttime: 35791394
+10-07 11:54:36.349  1971  1982 D HeatmapThread: !@ Heatmap prevv_dsoh_update_time: 29834625
+10-07 11:54:36.349  1971  1982 E HeatmapThread: !@Could not open '/efs/FactoryApp/bsoh', errno = 13
+10-07 11:54:36.349  1971  1982 E HeatmapThread: !@ CAM Could not access BSOH EFS
+10-07 11:54:36.349  1971  1982 E HeatmapThread: !@ CAM New BSOH: 0
+10-07 11:54:36.394  7378  7378 I SDHMS:LOAD: type: LoadsFreqs, value: 0:0:0:806400:806400:806400:672384:1651200:633600:253:285:220
+10-07 11:54:36.441 23003 23003 I adbd    : adbd service requested 'shell,v2:export ANDROID_LOG_TAGS=''; exec logcat '-d''
