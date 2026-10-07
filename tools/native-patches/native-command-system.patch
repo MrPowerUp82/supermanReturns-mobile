@@ -1,0 +1,1043 @@
+diff --git a/port/src/native_renderer/native_graphics_system_interface.h b/port/src/native_renderer/native_graphics_system_interface.h
+--- a/port/src/native_renderer/native_graphics_system_interface.h
++++ b/port/src/native_renderer/native_graphics_system_interface.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ #include <cstdint>
++#include <functional>
+ #include <rex/system/interfaces/graphics.h>
+ 
+ namespace rex::ui {
+@@ -26,6 +27,7 @@
+     virtual void SignalGpuProgress() = 0;
+     virtual uint64_t progress_generation() const = 0;
+     virtual void WaitProgress(uint64_t since, uint32_t timeout_us) = 0;
++    virtual void WaitCondition(const std::function<bool()>&,uint32_t) = 0;
+ };
+ 
+ // Returns the active instance
+diff --git a/port/src/native_renderer/native_graphics_system_vulkan.h b/port/src/native_renderer/native_graphics_system_vulkan.h
+--- a/port/src/native_renderer/native_graphics_system_vulkan.h
++++ b/port/src/native_renderer/native_graphics_system_vulkan.h
+@@ -1,30 +1,5 @@
+ #pragma once
+-#include "native_graphics_system_interface.h"
+-
++#include "native_command_system.h"
+ namespace superman_returns::native {
+-
+-class VulkanNativeGraphicsSystem : public INativeGraphicsSystem {
+-public:
+-    VulkanNativeGraphicsSystem();
+-    ~VulkanNativeGraphicsSystem() override;
+-
+-    bool has_presentation() const override { return false; }
+-    rex::ui::GraphicsProvider* provider() const override { return nullptr; }
+-    rex::ui::Presenter* presenter() const override { return nullptr; }
+-    uint32_t guest_frame_counter() const override { return 0; }
+-    bool GetGammaRamp256(uint32_t* out_entries) const override { return false; }
+-    void SetInterruptCallback(uint32_t callback, uint32_t user_data) override {}
+-    void InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) override {}
+-    void EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) override {}
+-    void Shutdown() override {}
+-
+-    void SignalGpuProgress() override {}
+-    uint64_t progress_generation() const override { return 0; }
+-    void WaitProgress(uint64_t since, uint32_t timeout_us) override {}
+-
+-    rex::X_STATUS SetupPresentation(rex::ui::WindowedAppContext* app_context) override;
+-    rex::X_STATUS SetupGuestGpu(rex::runtime::FunctionDispatcher* function_dispatcher,
+-                           rex::system::KernelState* kernel_state) override;
+-};
+-
+-} // namespace superman_returns::native
++class VulkanNativeGraphicsSystem final:public NativeCommandSystem {public: explicit VulkanNativeGraphicsSystem(ProviderFactory factory):NativeCommandSystem(std::move(factory)) {}};
++}
+diff --git a/port/src/native_renderer/native_command_system.h b/port/src/native_renderer/native_command_system.h
+new file mode 100644
+--- /dev/null
++++ b/port/src/native_renderer/native_command_system.h
+@@ -0,0 +1,152 @@
++#pragma once
++
++#include <atomic>
++#include <condition_variable>
++#include <cstdint>
++#include <functional>
++#include <memory>
++#include <mutex>
++#include "../graphics/backend_selection.h"
++
++#include <rex/system/interfaces/graphics.h>
++#include <rex/system/xobject.h>
++#include "native_graphics_system_interface.h"
++
++namespace rex::memory {
++class Memory;
++}
++namespace rex::system {
++class XHostThread;
++}
++namespace rex::thread {
++class Event;
++}
++namespace rex::ui::d3d12 {
++class D3D12Provider;
++}
++
++namespace superman_returns::native {
++
++
++// The running native graphics system, or nullptr (Xenos / A/B mode).
++
++
++// GPU progress notification for guest threads that wait on the GPU (the XDK
++// polls fences and the read pointer in a busy loop). GpuProgressGeneration()
++// changes whenever the PM4 consumer writes memory (fences, write-backs) or
++// advances the read pointer; WaitForGpuProgress blocks until it differs from
++// `since` or the timeout expires. No-ops without the native graphics system.
++
++
++// Blocks until `done()` holds (re-checked on every GPU progress signal) or the
++// timeout expires.
++void WaitForGpuCondition(const std::function<bool()>& done, uint32_t timeout_us);
++
++
++
++class NativeCommandSystem : public INativeGraphicsSystem {
++ public:
++  using ProviderFactory=std::function<std::unique_ptr<rex::ui::GraphicsProvider>()>;
++  explicit NativeCommandSystem(ProviderFactory);
++  ~NativeCommandSystem() override;
++
++  rex::X_STATUS SetupPresentation(rex::ui::WindowedAppContext* app_context) override;
++  rex::X_STATUS SetupGuestGpu(rex::runtime::FunctionDispatcher* function_dispatcher,
++                         rex::system::KernelState* kernel_state) override;
++  bool has_presentation() const override { return presenter_ != nullptr; }
++  rex::ui::GraphicsProvider* provider() const override;
++  rex::ui::Presenter* presenter() const override;
++  // Not IGraphicsSystem overrides: the stock SDK interface has neither (they
++  // are additions of the kit's SDK fork). The renderer calls them directly.
++  uint32_t guest_frame_counter() const { return counter_.load(); }
++  bool GetGammaRamp256(uint32_t* out_entries) const;
++  void SetInterruptCallback(uint32_t callback, uint32_t user_data) override;
++  void InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) override;
++  void EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) override;
++  void Shutdown() override;
++  void InitializeShaderStorage(const std::filesystem::path&,uint32_t,bool) override;
++  void SetSystemCommandBufferGpuIdentifierAddress(uint32_t ptr) override;
++  void InitializeCommandMemory(rex::memory::Memory&);
++  bool ConsumeRing(uint32_t write_index);
++  void SetPaused(bool paused);
++  void TickVblank();
++  void SetInterruptDispatcher(std::function<void(uint32_t,uint32_t,uint32_t,uint32_t)> callback){interrupt_dispatcher_=std::move(callback);}
++
++
++ private:
++  static constexpr uint32_t kRegisterCount = 0x5003;
++  // Render state and shader constants start here: not tracked (the native
++  // renderer mirrors them itself from the same PM4 stream).
++  static constexpr uint32_t kFirstUnusedRegister = 0x2000;
++
++  static uint32_t ReadRegisterThunk(void* ppc_context, void* context, uint32_t addr);
++  static void WriteRegisterThunk(void* ppc_context, void* context, uint32_t addr, uint32_t value);
++  uint32_t ReadMmioRegister(uint32_t addr);
++  void WriteMmioRegister(uint32_t addr, uint32_t value);
++  void DispatchInterrupt(uint32_t source, uint32_t cpu);
++
++  // PM4 consumer (command processor thread).
++  void CommandThreadMain();
++  void VsyncThreadMain();
++  struct Reader;
++  bool ExecutePacket(Reader& reader);
++  bool ExecuteType3(Reader& reader, uint32_t packet);
++  void ExecuteBuffer(uint32_t address, uint32_t dwords, int depth);
++  void WriteRegister(uint32_t index, uint32_t value);
++  uint32_t ReadRegister(uint32_t index) const;
++  const uint8_t* PhysicalBytes(uint32_t,size_t) const;
++  uint32_t LoadMemory(uint32_t address) const;
++  void StoreMemory(uint32_t address, uint32_t value);
++  void StoreBigEndian(uint32_t address, uint32_t value);  // write-back/scratch
++  bool Compare(uint32_t func, uint32_t value, uint32_t ref) const;
++
++  std::unique_ptr<rex::ui::GraphicsProvider> provider_;
++  ProviderFactory provider_factory_;
++  std::function<void(uint32_t,uint32_t,uint32_t,uint32_t)> interrupt_dispatcher_;
++  std::atomic<bool> paused_{false};
++  uint32_t identifier_address_=0;
++  uint32_t indirect_depth_=0;
++  std::unique_ptr<rex::ui::Presenter> presenter_;
++  rex::ui::WindowedAppContext* app_context_ = nullptr;
++  rex::memory::Memory* memory_ = nullptr;
++  rex::runtime::FunctionDispatcher* function_dispatcher_ = nullptr;
++  rex::system::KernelState* kernel_state_ = nullptr;
++
++  // Register file: MMIO reads/writes and PM4 register writes (WAIT_REG_MEM,
++  // REG_TO_MEM, scratch write-back, gamma table).
++  std::unique_ptr<std::atomic<uint32_t>[]> registers_;
++  mutable std::recursive_mutex gamma_mutex_;
++  uint32_t gamma_ramp_[256] = {};  // DC_LUT_30_COLOR entries
++  uint32_t gamma_component_ = 0;
++
++  // Ring.
++  uint32_t ring_base_ = 0;
++  uint32_t ring_dwords_ = 0;
++  uint32_t read_index_ = 0;
++  std::atomic<uint32_t> write_index_{0xBAADF00D};
++  uint32_t read_ptr_writeback_ = 0;
++  std::unique_ptr<rex::thread::Event> write_event_;
++  // Wakes the PM4 consumer while it waits in WAIT_REG_MEM on a register
++  // (vblank, MMIO register writes) instead of spinning.
++  std::unique_ptr<rex::thread::Event> cp_wake_;
++ public:
++  void SignalGpuProgress();
++  uint64_t progress_generation() const { return progress_generation_.load(); }
++  void WaitProgress(uint64_t since, uint32_t timeout_us);
++  void WaitCondition(const std::function<bool()>& done, uint32_t timeout_us);
++ private:
++  std::atomic<uint64_t> progress_generation_{0};
++  std::mutex progress_mutex_;
++  std::condition_variable progress_cv_;
++  uint64_t bin_mask_ = ~0ull, bin_select_ = ~0ull;
++
++  std::atomic<uint32_t> counter_{0};
++  std::atomic<uint32_t> interrupt_callback_{0}, interrupt_callback_data_{0};
++
++  std::atomic<bool> running_{false};
++  rex::system::object_ref<rex::system::XHostThread> command_thread_;
++  rex::system::object_ref<rex::system::XHostThread> vsync_thread_;
++};
++
++}  // namespace superman_returns::native
++
+diff --git a/port/src/native_renderer/native_command_system.cpp b/port/src/native_renderer/native_command_system.cpp
+new file mode 100644
+--- /dev/null
++++ b/port/src/native_renderer/native_command_system.cpp
+@@ -0,0 +1,826 @@
++// Ported from crazyriddler/rexglue-native-kit @136bc6c4,
++// reference/conan/port/src/native/native_graphics_system.cpp (Conan native renderer).
++// The kit ships no license file at that revision; parts derived from Xenia /
++// ReXGlue keep their BSD license. Changes for Superman Returns are listed in
++// docs/native-port-plan.md section 2.
++//
++// Native graphics system - see native_graphics_system.h.
++//
++// The packet semantics below follow the SDK's (Xenia-derived) CommandProcessor
++// for everything the guest can observe; everything it cannot (draws, shader
++// loads, render state) is skipped. (The kit forced REXGLUE_ENABLE_PERF_COUNTERS
++// here; the stock SDK compiles the counters out of Release builds, so the
++// frame-time counters below are only live in non-Release builds.)
++
++#include "native_command_system.h"
++#include "guest_reads_android.h"
++#include <thread>
++
++#include <algorithm>
++#include <charconv>
++#include <string>
++
++#include <fmt/format.h>
++#include <chrono>
++#include <cstring>
++
++#include <rex/chrono/clock.h>
++#include <rex/cvar.h>
++#include <rex/graphics/registers.h>
++#include <rex/graphics/xenos.h>
++#include <rex/kernel/xboxkrnl/video.h>
++#include <rex/logging.h>
++#include <rex/perf/counter.h>
++#include <rex/runtime.h>
++#include <rex/system/function_dispatcher.h>
++#include <rex/system/kernel_state.h>
++#include <rex/system/xmemory.h>
++#include <rex/system/xthread.h>
++#include <rex/thread.h>
++
++#include <rex/ui/presenter.h>
++#include <rex/ui/graphics_provider.h>
++#if SR_VULKAN_GAME
++#include "../graphics/vulkan/platform/native_provider.h"
++#endif
++#include <rex/ui/windowed_app_context.h>
++
++
++
++#include "game_profile.h"
++
++
++#if SR_NATIVE_RENDERER_BUILD
++#include "native_renderer.h"
++#endif
++#if SR_HAS_LSFG
++#include "presenter_factory.h"
++#endif
++
++REXCVAR_DEFINE_INT32(sr_native_fps_limit, 30, "Superman Returns Native",
++                     "Native graphics system frame rate limit (30 = original, up to 120; 0 = "
++                     "sr_native_unlocked_vblank_hz)")
++    .range(0, 1000);
++REXCVAR_DEFINE_BOOL(sr_native_gpu_trace, false, "Superman Returns Native", "Debug: log native GPU packets/registers");
++REXCVAR_DEFINE_STRING(sr_native_gpu_luid, "", "Superman Returns Native",
++                     "Launcher GPU identity (16 hexadecimal digits); empty uses d3d12_adapter");
++// The kit's fork declares unlocked_vblank_rate in the runtime; the stock SDK
++// does not, so the unlocked rate is a project cvar.
++REXCVAR_DEFINE_INT32(sr_native_unlocked_vblank_hz, 240, "Superman Returns Native",
++                     "Guest vblank rate with sr_native_fps_limit=0 (benchmarks)")
++    .range(1, 2000);
++
++namespace superman_returns::native {
++
++using rex::X_STATUS;
++
++namespace xenos = rex::graphics::xenos;
++namespace gpu = rex::graphics;
++
++namespace {
++std::atomic<INativeGraphicsSystem*> g_active_system{nullptr};
++
++// Windows graphics preferences can reorder EnumAdapters1 per executable.
++// Resolve the launcher's LUID inside this process before creating the provider.
++
++}  // namespace
++
++INativeGraphicsSystem* ActiveNativeGraphicsSystem() { return g_active_system.load(); }
++
++uint64_t GpuProgressGeneration() {
++  INativeGraphicsSystem* system = g_active_system.load();
++  return system ? system->progress_generation() : 0;
++}
++
++void WaitForGpuProgress(uint64_t since, uint32_t timeout_us) {
++  if (INativeGraphicsSystem* system = g_active_system.load()) {
++    system->WaitProgress(since, timeout_us);
++  }
++}
++
++void WaitForGpuCondition(const std::function<bool()>& done, uint32_t timeout_us) {
++  if (INativeGraphicsSystem* system = g_active_system.load()) {
++    system->WaitCondition(done, timeout_us);
++  }
++}
++
++void NativeCommandSystem::WaitCondition(const std::function<bool()>& done,
++                                         uint32_t timeout_us) {
++  std::unique_lock<std::mutex> lock(progress_mutex_);
++  progress_cv_.wait_for(lock, std::chrono::microseconds(timeout_us),
++                        [&] { return !running_ || done(); });
++}
++
++void NativeCommandSystem::SignalGpuProgress() {
++  {
++    std::lock_guard<std::mutex> lock(progress_mutex_);
++    progress_generation_.fetch_add(1);
++  }
++  progress_cv_.notify_all();
++}
++
++void NativeCommandSystem::WaitProgress(uint64_t since, uint32_t timeout_us) {
++  std::unique_lock<std::mutex> lock(progress_mutex_);
++  progress_cv_.wait_for(lock, std::chrono::microseconds(timeout_us),
++                        [&] { return progress_generation_.load() != since || !running_; });
++}
++
++// Reads PM4 dwords from a ring (wrapping) or a linear buffer.
++struct NativeCommandSystem::Reader {
++  const uint8_t* base = nullptr;
++  uint32_t capacity = 0;  // dwords
++  uint32_t offset = 0;    // dwords
++  uint32_t remaining = 0;
++  uint32_t Read() {
++    uint32_t v;
++    if(!remaining || !capacity)throw std::runtime_error("Truncated native PM4 packet");
++    std::memcpy(&v, base + 4 * size_t(offset), 4);
++    offset = offset + 1 == capacity ? 0 : offset + 1;
++    --remaining;
++    return __builtin_bswap32(v);
++  }
++  void Skip(uint32_t n) {
++    if(n>remaining || !capacity)throw std::runtime_error("Native PM4 skip exceeds packet");
++    offset = uint32_t((uint64_t(offset) + n) % capacity);
++    remaining -= n;
++  }
++};
++
++NativeCommandSystem::NativeCommandSystem(ProviderFactory factory)
++    : provider_factory_(std::move(factory)),registers_(std::make_unique<std::atomic<uint32_t>[]>(kRegisterCount)) {
++  for (uint32_t i = 0; i < kRegisterCount; ++i) registers_[i].store(0);
++  write_event_ = rex::thread::Event::CreateAutoResetEvent(false);
++  cp_wake_ = rex::thread::Event::CreateAutoResetEvent(false);
++}
++
++NativeCommandSystem::~NativeCommandSystem() {Shutdown();}
++
++rex::ui::GraphicsProvider* NativeCommandSystem::provider() const { return provider_.get(); }
++
++rex::ui::Presenter* NativeCommandSystem::presenter() const {return presenter_.get();}
++rex::X_STATUS NativeCommandSystem::SetupPresentation(rex::ui::WindowedAppContext* context) {
++  if(presenter_)return X_STATUS_SUCCESS;
++  if(!context || !provider_factory_)return X_STATUS_UNSUCCESSFUL;
++  app_context_=context;provider_=provider_factory_();if(!provider_)return X_STATUS_UNSUCCESSFUL;
++  if(!context->CallInUIThreadSynchronous([this]{presenter_=provider_->CreatePresenter();}) || !presenter_) {provider_.reset();return X_STATUS_UNSUCCESSFUL;}
++  return X_STATUS_SUCCESS;
++}
++
++rex::X_STATUS NativeCommandSystem::SetupGuestGpu(rex::runtime::FunctionDispatcher* function_dispatcher,
++                                             rex::system::KernelState* kernel_state) {
++  memory_ = function_dispatcher->memory();
++  function_dispatcher_ = function_dispatcher;
++  kernel_state_ = kernel_state;
++  if(!provider_ || !presenter_)return X_STATUS_UNSUCCESSFUL;
++  // GPU registers: 0x7FC80000-0x7FC8FFFF.
++  memory_->AddVirtualMappedRange(0x7FC80000, 0xFFFF0000, 0x0000FFFF, this, &ReadRegisterThunk,
++                                 &WriteRegisterThunk);
++  InitializeCommandMemory(*memory_);
++  g_active_system.store(this);
++  command_thread_ = rex::system::object_ref<rex::system::XHostThread>(
++      new rex::system::XHostThread(kernel_state_, 256 * 1024, 0, [this]() {
++        CommandThreadMain();
++        return 0;
++      }));
++  command_thread_->set_name("Native GPU Commands");
++  command_thread_->Create();
++  vsync_thread_ = rex::system::object_ref<rex::system::XHostThread>(
++      new rex::system::XHostThread(kernel_state_, 128 * 1024, 0, [this]() {
++        VsyncThreadMain();
++        return 0;
++      }));
++  vsync_thread_->set_name("GPU VSync");
++  vsync_thread_->Create();
++  REXLOG_INFO("native graphics: guest GPU (sync-only PM4 consumer) started");
++  REXLOG_INFO("native graphics: Windows stack watchdog unavailable on Android");
++  return X_STATUS_SUCCESS;
++}
++
++void NativeCommandSystem::Shutdown() {
++  running_ = false;
++  INativeGraphicsSystem* expected=this;g_active_system.compare_exchange_strong(expected,nullptr);
++  SignalGpuProgress();
++  if(cp_wake_)cp_wake_->Set();
++  if (write_event_) write_event_->Set();
++  if (command_thread_) {
++    command_thread_->Wait(0, 0, 0, nullptr);
++    command_thread_.reset();
++  }
++  if (vsync_thread_) {
++    vsync_thread_->Wait(0, 0, 0, nullptr);
++    vsync_thread_.reset();
++  }
++#if SR_NATIVE_RENDERER_BUILD
++  Renderer::Get().ShutdownWorker();
++#endif
++  if (presenter_) {
++    if (app_context_) {
++      app_context_->CallInUIThreadSynchronous([this]() { presenter_.reset(); });
++    }
++    presenter_.reset();
++  }
++  provider_.reset();
++}
++
++bool NativeCommandSystem::GetGammaRamp256(uint32_t* out_entries) const {
++  if (!out_entries) return false;
++  std::lock_guard lock(gamma_mutex_);
++  std::memcpy(out_entries, gamma_ramp_, sizeof(gamma_ramp_));
++  return true;
++}
++
++void NativeCommandSystem::SetInterruptCallback(uint32_t callback, uint32_t user_data) {
++  interrupt_callback_ = callback;
++  interrupt_callback_data_ = user_data;
++  REXLOG_INFO("native graphics: interrupt callback {:08X} ({:08X})", callback, user_data);
++}
++
++void NativeCommandSystem::InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {
++  if(size_log2>25)throw std::runtime_error("Native ring size exceeds physical memory");
++  ring_base_ = ptr;
++  ring_dwords_ = (uint32_t(1) << (size_log2 + 3)) / 4;
++  read_index_ = 0;
++  REXLOG_INFO("native graphics: ring buffer {:08X} ({} dwords)", ptr, ring_dwords_);
++}
++
++void NativeCommandSystem::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) {
++  (void)block_size_log2;
++  read_ptr_writeback_ = ptr;
++  REXLOG_INFO("native graphics: read pointer write-back {:08X}", ptr);
++}
++
++// --- MMIO -------------------------------------------------------------------
++
++uint32_t NativeCommandSystem::ReadRegisterThunk(void*, void* context, uint32_t addr) {
++  return static_cast<NativeCommandSystem*>(context)->ReadMmioRegister(addr);
++}
++
++void NativeCommandSystem::WriteRegisterThunk(void*, void* context, uint32_t addr,
++                                              uint32_t value) {
++  static_cast<NativeCommandSystem*>(context)->WriteMmioRegister(addr, value);
++}
++
++uint32_t NativeCommandSystem::ReadMmioRegister(uint32_t addr) {
++  uint32_t r = (addr & 0xFFFF) / 4;
++  switch (r) {
++    case 0x0F00:  // RB_EDRAM_TIMING
++      return 0x08100748;
++    case 0x0F01:  // RB_BC_CONTROL
++      return 0x0000200E;
++    case 0x194C: {  // R500_D1MODE_V_COUNTER
++      rex::system::X_VIDEO_MODE mode;
++      rex::kernel::xboxkrnl::VdQueryVideoMode(&mode);
++      return std::min(uint32_t(mode.display_height), uint32_t(0x0FFF));
++    }
++    case 0x1951:  // interrupt status
++      return 1;   // vblank
++    case 0x1961: {  // AVIVO_D1MODE_VIEWPORT_SIZE
++      rex::system::X_VIDEO_MODE mode;
++      rex::kernel::xboxkrnl::VdQueryVideoMode(&mode);
++      return (std::min(uint32_t(mode.display_width), uint32_t(0x0FFF)) << 16) |
++             std::min(uint32_t(mode.display_height), uint32_t(0x0FFF));
++    }
++    default:
++      return ReadRegister(r);
++  }
++}
++
++void NativeCommandSystem::WriteMmioRegister(uint32_t addr, uint32_t value) {
++  uint32_t r = (addr & 0xFFFF) / 4;
++  if (REXCVAR_GET(sr_native_gpu_trace) && r != 0x01C5) {
++    static int logged = 0;
++    if (logged++ < 40) REXLOG_INFO("native gpu trace: mmio write {:04X} = {:08X}", r, value);
++  }
++  if (r < kRegisterCount) registers_[r].store(value);
++  cp_wake_->Set();  // a WAIT_REG_MEM on this register may now pass
++  if (r == 0x01C5) {  // CP_RB_WPTR: the guest kicked the ring
++    static int logged = 0;
++    if (logged < 3) {
++      ++logged;
++      REXLOG_INFO("native graphics: ring kick wptr {}", value);
++    }
++    write_index_.store(value);
++    write_event_->Set();
++  }
++}
++
++void NativeCommandSystem::DispatchInterrupt(uint32_t source, uint32_t cpu) {
++  if (!interrupt_callback_) return;
++  if(interrupt_dispatcher_) {interrupt_dispatcher_(interrupt_callback_,interrupt_callback_data_,source,cpu);return;}
++  auto* thread = rex::system::XThread::GetCurrentThread();
++  if (!thread) return;
++  thread->SetActiveCpu(cpu == 0xFFFFFFFF ? 2 : cpu);
++  uint64_t args[] = {source, interrupt_callback_data_};
++  function_dispatcher_->ExecuteInterrupt(thread->thread_state(), interrupt_callback_.load(), args, 2);
++}
++
++// --- Vblank -------------------------------------------------------------------
++
++void NativeCommandSystem::VsyncThreadMain() {
++  // Conan presents every second vblank (D3DPRESENT_INTERVAL_TWO), so the
++  // guest vblank rate is twice the frame rate limit. SR's cadence is
++  // profile::kVblanksPerFrame (unconfirmed). Host present vsync is separate
++  // (`vsync`, D3D12 presenter).
++  uint64_t freq = rex::chrono::Clock::guest_tick_frequency();
++  int32_t fps = REXCVAR_GET(sr_native_fps_limit);
++  int32_t vblank_hz = fps > 0 ? int32_t(profile::kVblanksPerFrame) * std::clamp(fps, 10, 1000)
++                              : std::max(int32_t(1), REXCVAR_GET(sr_native_unlocked_vblank_hz));
++  REXLOG_INFO("native graphics: frame rate limit {} (guest vblank {} Hz)", fps, vblank_hz);
++  uint64_t interval = std::max(uint64_t(1), freq / uint64_t(vblank_hz));
++  uint64_t last = rex::chrono::Clock::QueryGuestTickCount();
++  while (running_) {
++    uint64_t now = rex::chrono::Clock::QueryGuestTickCount();
++    if (now - last < interval) {
++      uint64_t remaining_us = (interval - (now - last)) * 1000000ull / freq;
++      rex::thread::Sleep(std::chrono::microseconds(std::min<uint64_t>(remaining_us, 8000ull)));
++      continue;
++    }
++    // Vblank: the guest sees progress and its vblank handler runs.
++    TickVblank();
++    last += interval;
++    if (rex::chrono::Clock::QueryGuestTickCount() - last >= interval) {
++      last = rex::chrono::Clock::QueryGuestTickCount();
++    }
++  }
++}
++
++// --- PM4 consumer -------------------------------------------------------------
++
++void NativeCommandSystem::CommandThreadMain() {
++
++  while (running_) {
++    uint32_t write_index = write_index_.load();
++    if (write_index == 0xBAADF00D || write_index == read_index_ || !ring_dwords_) {
++      // Spin briefly (the guest usually kicks again right away), then block.
++      bool kicked = false;
++      for (int i = 0; i < 64 && !kicked; ++i) {
++        std::this_thread::yield();
++        write_index = write_index_.load();
++        kicked = write_index != 0xBAADF00D && write_index != read_index_;
++      }
++      if (!kicked) {
++        rex::thread::Wait(write_event_.get(), false, std::chrono::milliseconds(2));
++        continue;
++      }
++    }
++    if(paused_) {rex::thread::Wait(write_event_.get(),false,std::chrono::milliseconds(2));continue;}
++    if(!ConsumeRing(write_index)) {running_=false;SignalGpuProgress();REXLOG_ERROR("native graphics: command processor stopped on invalid packet");}
++  }
++}
++
++void NativeCommandSystem::InitializeCommandMemory(rex::memory::Memory& memory) {memory_=&memory;running_=true;}
++void NativeCommandSystem::InitializeShaderStorage(const std::filesystem::path&,uint32_t,bool) {
++  // The injected provider validates its .srvk before guest GPU setup.
++  if(!provider_)throw std::runtime_error("Native shader storage requested before presentation");
++}
++void NativeCommandSystem::SetSystemCommandBufferGpuIdentifierAddress(uint32_t address){identifier_address_=address;}
++void NativeCommandSystem::SetPaused(bool paused){paused_=paused;cp_wake_->Set();write_event_->Set();SignalGpuProgress();}
++void NativeCommandSystem::TickVblank(){if(!running_ || paused_)return;counter_.fetch_add(1);cp_wake_->Set();DispatchInterrupt(0,2);}
++bool NativeCommandSystem::ConsumeRing(uint32_t write_index) {
++  if(!running_ || paused_ || !ring_dwords_)return false;
++  write_index %= ring_dwords_;
++  Reader reader;
++  reader.base = PhysicalBytes(ring_base_,size_t(ring_dwords_)*4);
++  reader.capacity = ring_dwords_;
++  reader.offset = read_index_;
++  reader.remaining = (write_index + ring_dwords_ - read_index_) % ring_dwords_;
++  while (reader.remaining && running_) {
++    if (!ExecutePacket(reader)) {
++    REXLOG_ERROR("native graphics: bad PM4 packet in the ring at {:08X}",
++           ring_base_ + 4 * reader.offset);
++    return false;
++    }
++  }
++  read_index_ = write_index;
++  if (read_ptr_writeback_) StoreBigEndian(read_ptr_writeback_, read_index_);
++  SignalGpuProgress();
++  return true;
++}
++const uint8_t* NativeCommandSystem::PhysicalBytes(uint32_t address,size_t length) const {
++  std::string error;auto pointer=ValidatedGuestPointer(*memory_,0xA0000000u+(address&0x1FFFFFFFu),length,error);
++  if(!pointer)throw std::runtime_error(error);return pointer;
++}
++
++void NativeCommandSystem::ExecuteBuffer(uint32_t address, uint32_t dwords, int depth) {
++  if (!dwords || indirect_depth_>=4) return;
++  ++indirect_depth_;
++  struct Scope {uint32_t& value;~Scope(){--value;}} scope{indirect_depth_};
++  Reader reader;
++  reader.base = PhysicalBytes(address,size_t(dwords)*4);
++  reader.capacity = dwords;
++  reader.offset = 0;
++  reader.remaining = dwords;
++  while (reader.remaining && running_) {
++    if (!ExecutePacket(reader)) {
++      REXLOG_ERROR("native graphics: bad PM4 packet in the indirect buffer {:08X}", address);
++      return;
++    }
++  }
++}
++
++bool NativeCommandSystem::ExecutePacket(Reader& reader) {
++  uint32_t packet = reader.Read();
++  if (packet == 0) return true;
++  switch (packet >> 30) {
++    case 0: {  // register writes
++      uint32_t count = ((packet >> 16) & 0x3FFF) + 1;
++      if (reader.remaining < count) return false;
++      uint32_t index = packet & 0x7FFF;
++      bool one = (packet >> 15) & 1;
++      // Render state / constants (>= 0x2000) are only mirrored by the native
++      // renderer; this sync-only consumer never reads them: skip the burst.
++      if (index >= kFirstUnusedRegister) {
++        reader.Skip(count);
++        return true;
++      }
++      for (uint32_t i = 0; i < count; ++i) WriteRegister(one ? index : index + i, reader.Read());
++      return true;
++    }
++    case 1: {
++      if (reader.remaining < 2) return false;
++      uint32_t a = reader.Read(), b = reader.Read();
++      WriteRegister(packet & 0x7FF, a);
++      WriteRegister((packet >> 11) & 0x7FF, b);
++      return true;
++    }
++    case 2:
++      return true;
++    default:
++      return ExecuteType3(reader, packet);
++  }
++}
++
++uint32_t NativeCommandSystem::ReadRegister(uint32_t index) const {
++  if (index >= kFirstUnusedRegister && index < kRegisterCount) {
++    static std::atomic<bool> warned{false};
++    if (!warned.exchange(true)) {
++      REXLOG_WARN("native graphics: read of render-state register {:04X}, which the sync-only "
++                  "consumer does not track", index);
++    }
++  }
++  return index < kRegisterCount ? registers_[index].load() : 0;
++}
++
++uint32_t NativeCommandSystem::LoadMemory(uint32_t address) const {
++  uint32_t v;
++  std::memcpy(&v, PhysicalBytes(address & ~3u,4), 4);
++  // Like Xenia: the GPU reads host-order dwords and the low address bits select
++  // its endian swap (k8in32 turns big-endian guest data into the value).
++  return xenos::GpuSwap(v, xenos::Endian(address & 3));
++}
++
++void NativeCommandSystem::StoreMemory(uint32_t address, uint32_t value) {
++  uint32_t v = xenos::GpuSwap(value, xenos::Endian(address & 3));
++  std::memcpy(const_cast<uint8_t*>(PhysicalBytes(address & ~3u,12)), &v, 4);
++  SignalGpuProgress();  // fences: wake guest threads waiting on the GPU
++}
++
++void NativeCommandSystem::StoreBigEndian(uint32_t address, uint32_t value) {
++  uint32_t v = __builtin_bswap32(value);
++  std::memcpy(const_cast<uint8_t*>(PhysicalBytes(address,4)), &v, 4);
++}
++
++bool NativeCommandSystem::Compare(uint32_t func, uint32_t value, uint32_t ref) const {
++  switch (func & 7) {
++    case 0: return false;
++    case 1: return value < ref;
++    case 2: return value <= ref;
++    case 3: return value == ref;
++    case 4: return value != ref;
++    case 5: return value >= ref;
++    case 6: return value > ref;
++    default: return true;
++  }
++}
++
++void NativeCommandSystem::WriteRegister(uint32_t index, uint32_t value) {
++  if (index >= kRegisterCount) return;
++  // Fast path: render state and ALU/fetch/bool/loop constants (thousands per
++  // frame) have no side effects here; a relaxed store is a plain mov instead of
++  // a locked xchg. Every register with a side effect below is < 0x2000.
++  if (index >= 0x2000) {
++    registers_[index].store(value, std::memory_order_relaxed);
++    return;
++  }
++  if (REXCVAR_GET(sr_native_gpu_trace)) {
++    static int logged = 0;
++    if (logged++ < 60) REXLOG_INFO("native gpu trace: reg {:04X} = {:08X}", index, value);
++  }
++  registers_[index].store(value);
++  if (index >= gpu::XE_GPU_REG_SCRATCH_REG0 && index <= gpu::XE_GPU_REG_SCRATCH_REG0 + 7) {
++    // Scratch register write-back to memory (interrupt sync, fences).
++    uint32_t n = index - gpu::XE_GPU_REG_SCRATCH_REG0;
++    if (ReadRegister(gpu::XE_GPU_REG_SCRATCH_UMSK) & (1u << n)) {
++      uint32_t address = ReadRegister(gpu::XE_GPU_REG_SCRATCH_ADDR) + 4 * n;
++      uint32_t v = __builtin_bswap32(value);
++      std::memcpy(const_cast<uint8_t*>(PhysicalBytes(address,4)), &v, 4);
++    }
++    return;
++  }
++  std::lock_guard lock(gamma_mutex_);
++  switch (index) {
++    case gpu::XE_GPU_REG_COHER_STATUS_HOST:
++      // Pending until a WAIT_REG_MEM on it makes memory coherent.
++      registers_[index].store(value | 0x80000000u);
++      break;
++    case gpu::XE_GPU_REG_DC_LUT_RW_INDEX:
++      gamma_component_ = 0;
++      break;
++    case gpu::XE_GPU_REG_DC_LUT_SEQ_COLOR: {
++      uint32_t rw_index = ReadRegister(gpu::XE_GPU_REG_DC_LUT_RW_INDEX) & 0xFF;
++      // Red, green, blue order; the write enable mask is blue, green, red.
++      if (ReadRegister(gpu::XE_GPU_REG_DC_LUT_WRITE_EN_MASK) & (1u << (2 - gamma_component_))) {
++        uint32_t c = (value & 0xFFFF) >> 6;
++        uint32_t shift = gamma_component_ == 0 ? 20 : gamma_component_ == 1 ? 10 : 0;
++        gamma_ramp_[rw_index] = (gamma_ramp_[rw_index] & ~(0x3FFu << shift)) | (c << shift);
++      }
++      if (++gamma_component_ >= 3) {
++        WriteRegister(gpu::XE_GPU_REG_DC_LUT_RW_INDEX, (rw_index + 1) & 0xFF);
++      }
++      break;
++    }
++    case gpu::XE_GPU_REG_DC_LUT_PWL_DATA: {
++      uint32_t rw_index = ReadRegister(gpu::XE_GPU_REG_DC_LUT_RW_INDEX);
++      if (++gamma_component_ >= 3) {
++        WriteRegister(gpu::XE_GPU_REG_DC_LUT_RW_INDEX,
++                      (rw_index & ~0x7Fu) | (((rw_index & 0x7F) + 1) & 0x7F));
++      }
++      break;
++    }
++    case gpu::XE_GPU_REG_DC_LUT_30_COLOR: {
++      uint32_t rw_index = ReadRegister(gpu::XE_GPU_REG_DC_LUT_RW_INDEX) & 0xFF;
++      uint32_t mask = ReadRegister(gpu::XE_GPU_REG_DC_LUT_WRITE_EN_MASK) & 7;
++      uint32_t e = gamma_ramp_[rw_index];
++      if (mask & 1) e = (e & ~0x3FFu) | (value & 0x3FF);
++      if (mask & 2) e = (e & ~(0x3FFu << 10)) | (value & (0x3FFu << 10));
++      if (mask & 4) e = (e & ~(0x3FFu << 20)) | (value & (0x3FFu << 20));
++      gamma_ramp_[rw_index] = e;
++      WriteRegister(gpu::XE_GPU_REG_DC_LUT_RW_INDEX, (rw_index + 1) & 0xFF);
++      break;
++    }
++    default:
++      break;
++  }
++}
++
++bool NativeCommandSystem::ExecuteType3(Reader& reader, uint32_t packet) {
++  uint32_t opcode = (packet >> 8) & 0x7F;
++  uint32_t count = ((packet >> 16) & 0x3FFF) + 1;
++  if (reader.remaining < count) return false;
++  uint32_t minimum=1;
++  switch(opcode) {
++    case xenos::PM4_WAIT_REG_MEM:minimum=5;break;
++    case xenos::PM4_COND_WRITE:minimum=6;break;
++    case xenos::PM4_REG_RMW:case xenos::PM4_EVENT_WRITE_SHD:minimum=3;break;
++    case xenos::PM4_INDIRECT_BUFFER:case xenos::PM4_INDIRECT_BUFFER_PFD:
++    case xenos::PM4_REG_TO_MEM:case xenos::PM4_MEM_WRITE:case xenos::PM4_EVENT_WRITE_EXT:
++    case xenos::PM4_SET_BIN_MASK:case xenos::PM4_SET_BIN_SELECT:minimum=2;break;
++  }
++  if(count<minimum)return false;
++  {
++    static int logged = 0;
++    if (logged < 60 && REXCVAR_GET(sr_native_gpu_trace)) {
++      ++logged;
++      std::string d;
++      Reader peek = reader;
++      for (uint32_t i = 0; i < std::min(count, 6u); ++i) d += fmt::format(" {:08X}", peek.Read());
++      REXLOG_INFO("native gpu trace: type3 op {:02X} count {} pred {}:{}", opcode, count, packet & 1, d);
++    }
++  }
++  uint32_t end_remaining = reader.remaining - count;
++  auto finish = [&]() {
++    if (reader.remaining > end_remaining) reader.Skip(reader.remaining - end_remaining);
++    return true;
++  };
++  // Predicated packets (tiling bins); predicated swaps are never valid.
++  if ((packet & 1) && (!(bin_select_ & bin_mask_) || opcode == xenos::PM4_XE_SWAP)) {
++    return finish();
++  }
++  switch (opcode) {
++    case xenos::PM4_INDIRECT_BUFFER:
++    case xenos::PM4_INDIRECT_BUFFER_PFD: {
++      uint32_t address = xenos::GpuToCpu(xenos::CpuToGpu(reader.Read()));
++      uint32_t length = reader.Read() & 0xFFFFF;
++      finish();
++      ExecuteBuffer(address, length, 1);
++      return true;
++    }
++    case xenos::PM4_INTERRUPT: {
++      uint32_t cpu_mask = reader.Read();
++      for (uint32_t n = 0; n < 6; ++n) {
++        if (cpu_mask & (1u << n)) DispatchInterrupt(1, n);
++      }
++      return finish();
++    }
++    case xenos::PM4_XE_SWAP: {  // written by VdSwap
++      static uint64_t last_tick = 0;
++      uint64_t now = rex::chrono::Clock::QueryHostTickCount();
++      if (last_tick) {
++        uint64_t f = rex::chrono::Clock::QueryHostTickFrequency();
++        PROFILE_FRAME_TIME_US(int64_t((now - last_tick) * 1000000 / f));
++        PROFILE_FPS(int64_t(f / std::max<uint64_t>(1, now - last_tick)));
++      }
++      last_tick = now;
++      rex::perf::Profiler::Flip();
++      counter_.fetch_add(1);
++      return finish();
++    }
++    case xenos::PM4_WAIT_REG_MEM: {
++      uint32_t info = reader.Read(), poll = reader.Read(), ref = reader.Read(),
++               mask = reader.Read(), wait = reader.Read();
++      bool is_memory = (info & 0x10) != 0;
++      auto start = std::chrono::steady_clock::now();
++      bool reported = false;
++      for (;;) {
++        uint32_t value;
++        if (is_memory) {
++          value = LoadMemory(poll);
++        } else {
++          if (poll == gpu::XE_GPU_REG_COHER_STATUS_HOST) {
++            registers_[poll].store(0);  // everything is coherent: there is no GPU cache
++          }
++          value = ReadRegister(poll);
++        }
++        if (Compare(info, value & mask, ref) || !running_) break;
++        if (!reported && std::chrono::steady_clock::now() - start > std::chrono::seconds(2)) {
++          reported = true;
++          REXLOG_WARN("native graphics: WAIT_REG_MEM {} {:08X} value {:08X} mask {:08X} func {} ref "
++                      "{:08X} stalled > 2 s",
++                      is_memory ? "mem" : "reg", poll, value, mask, info & 7, ref);
++        }
++        // Block instead of spinning: register polls wait for a vblank or an
++        // MMIO register write; memory polls (written by guest CPU threads)
++        // re-check every 100 us.
++        if (is_memory || wait >= 0x100) {
++          rex::thread::Sleep(std::chrono::microseconds(100));
++        } else {
++          rex::thread::Wait(cp_wake_.get(), false, std::chrono::milliseconds(1));
++        }
++        rex::thread::SyncMemory();
++      }
++      return finish();
++    }
++    case xenos::PM4_REG_RMW: {
++      uint32_t info = reader.Read(), and_mask = reader.Read(), or_mask = reader.Read();
++      uint32_t reg = info & 0x1FFF;
++      uint32_t value = ReadRegister(reg);
++      value &= (info >> 31) & 1 ? ReadRegister(and_mask & 0x1FFF) : and_mask;
++      value |= (info >> 30) & 1 ? ReadRegister(or_mask & 0x1FFF) : or_mask;
++      WriteRegister(reg, value);
++      return finish();
++    }
++    case xenos::PM4_REG_TO_MEM: {
++      uint32_t reg = reader.Read(), address = reader.Read();
++      StoreMemory(address, ReadRegister(reg));
++      return finish();
++    }
++    case xenos::PM4_MEM_WRITE: {
++      uint32_t address = reader.Read();
++      for (uint32_t i = 1; i < count; ++i, address += 4) StoreMemory(address, reader.Read());
++      return finish();
++    }
++    case xenos::PM4_COND_WRITE: {
++      uint32_t info = reader.Read(), poll = reader.Read(), ref = reader.Read(),
++               mask = reader.Read(), target = reader.Read(), data = reader.Read();
++      uint32_t value = (info & 0x10) ? LoadMemory(poll) : ReadRegister(poll);
++      if (Compare(info, value & mask, ref)) {
++        if (info & 0x100) {
++          StoreMemory(target, data);
++        } else {
++          WriteRegister(target, data);
++        }
++      }
++      return finish();
++    }
++    case xenos::PM4_EVENT_WRITE: {
++      WriteRegister(gpu::XE_GPU_REG_VGT_EVENT_INITIATOR, reader.Read() & 0x3F);
++      return finish();
++    }
++    case xenos::PM4_EVENT_WRITE_SHD: {  // fence value (or the frame counter) to memory
++      uint32_t initiator = reader.Read(), address = reader.Read(), value = reader.Read();
++      WriteRegister(gpu::XE_GPU_REG_VGT_EVENT_INITIATOR, initiator & 0x3F);
++      StoreMemory(address, (initiator >> 31) & 1 ? counter_.load() : value);
++      return finish();
++    }
++    case xenos::PM4_EVENT_WRITE_EXT: {  // screen extents of the previous draws
++      uint32_t initiator = reader.Read(), address = reader.Read();
++      WriteRegister(gpu::XE_GPU_REG_VGT_EVENT_INITIATOR, initiator & 0x3F);
++      const uint16_t extents[] = {0, uint16_t(xenos::kTexture2DCubeMaxWidthHeight >> 3), 0,
++                                  uint16_t(xenos::kTexture2DCubeMaxWidthHeight >> 3), 0, 1};
++      uint8_t* dst = const_cast<uint8_t*>(PhysicalBytes(address & ~3u,12));
++      for (uint32_t i = 0; i < 6; ++i) {
++        uint16_t v = __builtin_bswap16(extents[i]);  // k8in16
++        std::memcpy(dst + 2 * i, &v, 2);
++      }
++      return finish();
++    }
++    case xenos::PM4_EVENT_WRITE_ZPD: {  // occlusion queries report a fixed sample count
++      WriteRegister(gpu::XE_GPU_REG_VGT_EVENT_INITIATOR, reader.Read() & 0x3F);
++      uint32_t counts_address = ReadRegister(gpu::XE_GPU_REG_RB_SAMPLE_COUNT_ADDR);
++      if (counts_address) {
++        auto* counts = memory_->TranslatePhysical<xenos::xe_gpu_depth_sample_counts*>(counts_address);
++        const uint32_t kFinished = __builtin_bswap32(0xFFFFFEED);
++        bool end = counts->ZPass_A == kFinished || counts->ZPass_B == kFinished ||
++                   counts->ZFail_A == kFinished || counts->ZFail_B == kFinished;
++        std::memset(counts, 0, sizeof(*counts));
++        if (end) {
++          counts->ZPass_A = 1000;
++          counts->Total_A = 1000;
++        }
++      }
++      return finish();
++    }
++    case xenos::PM4_SET_CONSTANT: {
++      uint32_t offset_type = reader.Read();
++      uint32_t index = offset_type & 0x7FF;
++      uint32_t first;
++      switch ((offset_type >> 16) & 0xFF) {
++        case 0: first = 0x4000 + index; break;
++        case 1: first = 0x4800 + index; break;
++        case 2: first = 0x4900 + index; break;
++        case 3: first = 0x4908 + index; break;
++        case 4: first = 0x2000 + index; break;
++        default: return finish();
++      }
++      if (first >= kFirstUnusedRegister) return finish();  // constants: see type 0
++      for (uint32_t i = 1; i < count; ++i) WriteRegister(first + i - 1, reader.Read());
++      return finish();
++    }
++    case xenos::PM4_SET_CONSTANT2:
++    case xenos::PM4_SET_SHADER_CONSTANTS: {
++      uint32_t index = reader.Read() & 0xFFFF;
++      if (index >= kFirstUnusedRegister) return finish();
++      for (uint32_t i = 1; i < count; ++i) WriteRegister(index + i - 1, reader.Read());
++      return finish();
++    }
++    case xenos::PM4_LOAD_ALU_CONSTANT: {  // registers from memory
++      uint32_t address = reader.Read() & 0x3FFFFFFF;
++      uint32_t offset_type = reader.Read();
++      uint32_t size = reader.Read() & 0xFFF;
++      uint32_t index = offset_type & 0x7FF;
++      uint32_t first;
++      switch ((offset_type >> 16) & 0xFF) {
++        case 0: first = 0x4000 + index; break;
++        case 1: first = 0x4800 + index; break;
++        case 2: first = 0x4900 + index; break;
++        case 3: first = 0x4908 + index; break;
++        case 4: first = 0x2000 + index; break;
++        default: return finish();
++      }
++      if (first >= kFirstUnusedRegister) return finish();
++      const uint8_t* src = PhysicalBytes(address,size_t(count-1)*4);
++      for (uint32_t i = 0; i < size; ++i) {
++        uint32_t v;
++        std::memcpy(&v, src + 4 * i, 4);
++        WriteRegister(first + i, __builtin_bswap32(v));
++      }
++      return finish();
++    }
++    case xenos::PM4_VIZ_QUERY: {
++      uint32_t d = reader.Read();
++      uint32_t id = d & 0x3F;
++      if (!(d & 0x100)) {
++        WriteRegister(gpu::XE_GPU_REG_VGT_EVENT_INITIATOR, xenos::VIZQUERY_START);
++      } else {
++        WriteRegister(gpu::XE_GPU_REG_VGT_EVENT_INITIATOR, xenos::VIZQUERY_END);
++        uint32_t reg = id < 32 ? gpu::XE_GPU_REG_PA_SC_VIZ_QUERY_STATUS_0
++                               : gpu::XE_GPU_REG_PA_SC_VIZ_QUERY_STATUS_1;
++        registers_[reg].fetch_or(1u << (id & 31));
++      }
++      return finish();
++    }
++    case xenos::PM4_SET_BIN_MASK_LO: {
++      bin_mask_ = (bin_mask_ & 0xFFFFFFFF00000000ull) | reader.Read();
++      return finish();
++    }
++    case xenos::PM4_SET_BIN_MASK_HI: {
++      bin_mask_ = (bin_mask_ & 0xFFFFFFFFull) | (uint64_t(reader.Read()) << 32);
++      return finish();
++    }
++    case xenos::PM4_SET_BIN_SELECT_LO: {
++      bin_select_ = (bin_select_ & 0xFFFFFFFF00000000ull) | reader.Read();
++      return finish();
++    }
++    case xenos::PM4_SET_BIN_SELECT_HI: {
++      bin_select_ = (bin_select_ & 0xFFFFFFFFull) | (uint64_t(reader.Read()) << 32);
++      return finish();
++    }
++    case xenos::PM4_SET_BIN_MASK: {
++      uint64_t hi = reader.Read(), lo = reader.Read();
++      bin_mask_ = (hi << 32) | lo;
++      return finish();
++    }
++    case xenos::PM4_SET_BIN_SELECT: {
++      uint64_t hi = reader.Read(), lo = reader.Read();
++      bin_select_ = (hi << 32) | lo;
++      return finish();
++    }
++    default:
++      // ME_INIT, NOP, draws, IM_LOAD(_IMMEDIATE), INVALIDATE_STATE,
++      // CONTEXT_UPDATE, WAIT_FOR_IDLE...: nothing the guest can observe.
++      return finish();
++  }
++}
++
++}  // namespace superman_returns::native
++
