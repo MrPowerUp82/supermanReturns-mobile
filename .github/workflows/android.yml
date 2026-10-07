@@ -1,0 +1,25 @@
+name: Android development build
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install pinned SDK packages
+        shell: pwsh
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1'
+      - name: Importer tests
+        shell: pwsh
+        run: ./tools/test.ps1
+      - name: APK and Android lint
+        shell: pwsh
+        run: ./tools/build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: superman-returns-mobile-development
+          path: artifacts/*.apk

@@ -1,0 +1,59 @@
+{
+  "date": "2026-10-07",
+  "source": "superman_returns_recomp/port/src/graphics/vulkan",
+  "revision": "ae5107814a5686de5fa1eff11a1120d07fa7d883",
+  "files": [
+    {
+      "file": "native/vulkan/context.cpp",
+      "sha256": "450e6a09e04df2d485f013730d67f3e0100429e64a2828006e616807b9f4b7b3"
+    },
+    {
+      "file": "native/vulkan/context.h",
+      "sha256": "8d6f00ddae9c17e2a69e80e8003548c498791b01a2605de7f74a880598998329"
+    },
+    {
+      "file": "native/vulkan/frame_loop.cpp",
+      "sha256": "8361bc8687a637f111d52fa4a7538a61dd4d7b6e26002a6a999feda3726f1a73"
+    },
+    {
+      "file": "native/vulkan/frame_loop.h",
+      "sha256": "95336f71fe603113a54d3a4097b5db801d6b0eb90e674bded89daefc492a18f0"
+    },
+    {
+      "file": "native/vulkan/functions.inc",
+      "sha256": "ebef48e08430df5923f9626638903f1de1f2ae1026bfce0e601d3196c04c6849"
+    },
+    {
+      "file": "native/vulkan/loader.cpp",
+      "sha256": "02276673b5f101b8e37ceb26474179514b6f5a877992c27d3a12068a4adeb372"
+    },
+    {
+      "file": "native/vulkan/loader.h",
+      "sha256": "1c622205ebf4718f2176c515a12f9711f073287e21b2c9fd74e681a010c4151f"
+    },
+    {
+      "file": "native/vulkan/policy.cpp",
+      "sha256": "b69dc214544e2b35b4b88198e444eb31b3ff80709c32daa7303f2bac1408b211"
+    },
+    {
+      "file": "native/vulkan/policy.h",
+      "sha256": "17764b42c2a44b0380a4472dadce770cd35f345f5aac678def8f210047f986d5"
+    },
+    {
+      "file": "native/vulkan/query.h",
+      "sha256": "3ca8e691822313b2059f274846819ed3937af0c7c167664f3486565193b894a1"
+    },
+    {
+      "file": "native/vulkan/swapchain.cpp",
+      "sha256": "ef441336a68092ce630d90defaa9c7a83d11a58c6d4179a47d53ef8f2b9d196f"
+    },
+    {
+      "file": "native/vulkan/swapchain.h",
+      "sha256": "cb97d785fd7a6ecd004fe8d88848d128656d0bf45248a712ecf8bcc7073d6c31"
+    }
+  ],
+  "skate3_reference": {
+    "url": "https://github.com/Buku313/Skate3-Mobile",
+    "revision": "e1b28c185d578c22e3a630f6f3b13ed123462a43"
+  }
+}

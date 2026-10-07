@@ -1,0 +1,15 @@
+.tools/
+.references/
+.gradle/
+**/build/
+android/local.properties
+artifacts/
+game/
+*.iso
+*.xex
+*.AST
+__pycache__/
+.idea/
+.cxx/
+**/.cxx/
+*.iml
