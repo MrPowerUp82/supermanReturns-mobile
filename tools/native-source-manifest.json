@@ -1,0 +1,11 @@
+{
+  "include": [
+    "port/src/native_renderer/**",
+    "port/src/graphics/guest/**",
+    "port/src/graphics/shaders/**",
+    "port/src/graphics/vulkan/**",
+    "port/src/*.h",
+    "docs/native-port-plan.md",
+    "docs/native-renderer.md"
+  ]
+}
