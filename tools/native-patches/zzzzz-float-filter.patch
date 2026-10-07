@@ -1,0 +1,41 @@
+diff --git a/port/src/graphics/shaders/binding_contract.h b/port/src/graphics/shaders/binding_contract.h
+--- a/port/src/graphics/shaders/binding_contract.h
++++ b/port/src/graphics/shaders/binding_contract.h
+@@ -1,8 +1,8 @@
+ #pragma once
+ #include <cstdint>
+ namespace superman_returns::graphics::shaders {
+-inline constexpr uint32_t BindingContractVersion = 1;
+-inline constexpr char BindingAbi[] = "sr-vulkan-buffers-v1";
++inline constexpr uint32_t BindingContractVersion = 2;
++inline constexpr char BindingAbi[] = "sr-vulkan-buffers-v2";
+ inline constexpr uint32_t ConstantBytes = 4096, SharedBytes = 4096,
+                           DescriptorArrayCount = 32;
+ } // namespace superman_returns::graphics::shaders
+diff --git a/port/src/graphics/shaders/vulkan_shader_service.cpp b/port/src/graphics/shaders/vulkan_shader_service.cpp
+--- a/port/src/graphics/shaders/vulkan_shader_service.cpp
++++ b/port/src/graphics/shaders/vulkan_shader_service.cpp
+@@ -1,4 +1,5 @@
+ #include "vulkan_shader_service.h"
++#include "binding_contract.h"
+ #include <algorithm>
+ #include <condition_variable>
+ #include <cstring>
+@@ -33,7 +34,7 @@
+ }
+ bool DecodeShaderResult(std::span<const uint8_t> bytes,ShaderStage stage,CompiledShader& result,std::string& error) {
+   try {
+-    Reader r(bytes);if(r.Word()!=0x33525653 || r.Word()!=1) throw std::runtime_error("Shader result schema/ABI mismatch");
++    Reader r(bytes);if(r.Word()!=0x33525653 || r.Word()!=BindingContractVersion) throw std::runtime_error("Shader result schema/ABI mismatch");
+     uint32_t status=r.Word();if(r.Word()!=uint32_t(stage)) throw std::runtime_error("Shader result stage mismatch");
+     if(status==0) throw std::runtime_error(r.Text());if(status!=1) throw std::runtime_error("Invalid shader status");
+     CompiledShader out;out.stage=stage;auto& q=out.requirements;
+@@ -68,7 +69,7 @@
+     if(config.library.empty()) return;
+     try {
+       auto bytes=ReadFile(config.library,256*1024*1024);Reader r(bytes);
+-      auto magic=r.Bytes(8);if(std::memcmp(magic.data(),"SRVKLIB\0",8) || r.Word()!=1) throw std::runtime_error("Vulkan shader library schema/ABI mismatch");
++      auto magic=r.Bytes(8);if(std::memcmp(magic.data(),"SRVKLIB\0",8) || r.Word()!=BindingContractVersion) throw std::runtime_error("Vulkan shader library schema/ABI mismatch");
+       auto count=r.Word();if(!count || count>16384) throw std::runtime_error("Invalid shader library count");
+       uint64_t checksum=r.Word();checksum|=uint64_t(r.Word())<<32;
+       if(HashBytes(std::span<const uint8_t>(bytes).subspan(24))!=checksum) throw std::runtime_error("Shader library checksum mismatch");

@@ -12,6 +12,10 @@ struct FakeFrontend: native::NativeFrontend {unsigned swaps=0;uint32_t front=0;v
 int main(){try{
  auto root=std::filesystem::temp_directory_path()/("sr-bootstrap-test-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));std::filesystem::create_directories(root/"shaders");
  bool rejected=false;try{android::CreateNativeVulkanGraphicsSystem(root);}catch(const std::exception&){rejected=true;}Check(rejected);Check(!native::RendererActive());
+ for(auto versions:{std::pair{1u,1u},std::pair{1u,2u},std::pair{2u,1u}}){
+  shader_fixture::Write(root/"shaders/superman_returns_vulkan.srvk",shader_fixture::Library(std::vector<uint8_t>(24,1),0,versions.first,versions.second));
+  rejected=false;try{android::CreateNativeVulkanGraphicsSystem(root);}catch(const std::exception&){rejected=true;}Check(rejected);Check(!native::RendererActive());
+ }
  shader_fixture::Write(root/"shaders/superman_returns_vulkan.srvk",shader_fixture::Library(std::vector<uint8_t>(24,1)));
  {auto system=android::CreateNativeVulkanGraphicsSystem(root);Check(bool(system));Check(dynamic_cast<native::VulkanNativeGraphicsSystem*>(system.get())!=nullptr);Check(!native::RendererActive());}
  FakeFrontend frontend;std::string error;Check(!native::ActivateNativeFrontend(frontend,error));

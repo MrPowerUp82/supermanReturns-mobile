@@ -1,0 +1,77 @@
+diff --git a/tools/shaders/vulkan_contract.py b/tools/shaders/vulkan_contract.py
+--- a/tools/shaders/vulkan_contract.py
++++ b/tools/shaders/vulkan_contract.py
+@@ -1,5 +1,5 @@
+ """Versioned per-draw Vulkan ABI, independent of DXIL descriptor heaps."""
+-ABI='sr-vulkan-buffers-v1'
++ABI='sr-vulkan-buffers-v2'
+ def compile_arguments(stage):
+  if stage not in ('vs','ps'): raise ValueError('Only vs/ps stages supported')
+  args=['-spirv','-fspv-target-env=vulkan1.1','-D','SR_VULKAN_BUFFERS=1','-HV','2021','-all-resources-bound','-Wno-ignored-attributes','-T',stage+'_6_0']
+@@ -11,4 +11,4 @@
+  locations.update(dict(NORMAL0=5,NORMAL1=6,TANGENT0=7,BINORMAL0=8,BLENDINDICES0=9,BLENDWEIGHT0=10,COLOR0=11,COLOR1=12))
+  locations.update({f'TEXCOORD{i}':13+i for i in range(16)})
+  rows=[(0,0,'storage_buffer',1),(0,1,'storage_buffer',1),(0,2,'storage_buffer',1),(1,0,'sampled_image_2d',32),(1,1,'sampled_image_3d',32),(1,2,'sampled_image_cube',32),(2,0,'sampler',32),(3,0,'storage_buffer',32)]
+- return {'abi':ABI,'version':1,'target':'vulkan1.1','bindings':[dict(set=s,binding=b,type=t,count=n) for s,b,t,n in rows],'vertex_locations':locations,'constant_bytes':4096,'shared_bytes':4096}
++ return {'abi':ABI,'version':2,'target':'vulkan1.1','bindings':[dict(set=s,binding=b,type=t,count=n) for s,b,t,n in rows],'vertex_locations':locations,'constant_bytes':4096,'shared_bytes':4096}
+diff --git a/tools/shaders/runtime_vulkan_shader.py b/tools/shaders/runtime_vulkan_shader.py
+--- a/tools/shaders/runtime_vulkan_shader.py
++++ b/tools/shaders/runtime_vulkan_shader.py
+@@ -13,13 +13,13 @@
+     b=s.encode('utf-8')[:16384]
+     return word(len(b))+b
+ def failure(stage,diagnostic):
+-    return struct.pack('<4I',0x33525653,1,0,0 if stage=='vs' else 1)+text(diagnostic)
++    return struct.pack('<4I',0x33525653,2,0,0 if stage=='vs' else 1)+text(diagnostic)
+ def ready(stage,binary):
+     m=inspect_spirv(binary);errors=contract_errors(m)
+     if len(m['entrypoints'])!=1 or m['entrypoints'][0]['model']!=(0 if stage=='vs' else 4):errors.append('Shader entry point/stage mismatch')
+     if errors:raise ValueError('; '.join(errors))
+     q=requirements(m,stage)
+-    result=struct.pack('<4I',0x33525653,1,1,0 if stage=='vs' else 1)
++    result=struct.pack('<4I',0x33525653,2,1,0 if stage=='vs' else 1)
+     result+=b''.join(word(q[k]) for k in FIELDS)
+     for category in ('inputs','outputs'):
+         rows=[r for r in m[category] if 'location' in r]
+diff --git a/tools/shaders/make_vulkan_preshaders.py b/tools/shaders/make_vulkan_preshaders.py
+--- a/tools/shaders/make_vulkan_preshaders.py
++++ b/tools/shaders/make_vulkan_preshaders.py
+@@ -36,7 +36,7 @@
+         body += container + result
+     if len(body) + 24 > 256 * 1024 * 1024:
+         raise ValueError('Oversized shader library')
+-    return MAGIC + struct.pack('<IIQ', 1, len(entries), fnv1a64(body)) + body
++    return MAGIC + struct.pack('<IIQ', 2, len(entries), fnv1a64(body)) + body
+ 
+ 
+ def compile_entry(raw, cache, tools):
+@@ -80,7 +80,7 @@
+             if index % 25 == 0 or index == len(raws):
+                 print(f'Vulkan pre-shaders: {index}/{len(raws)}, {len(failed)} failed', flush=True)
+     args.out.parent.mkdir(parents=True, exist_ok=True)
+-    report = {'schema': 1, 'abi': 'sr-vulkan-buffers-v1', 'total': len(raws), 'ready': len(entries), 'failed': failed}
++    report = {'schema': 1, 'abi': 'sr-vulkan-buffers-v2', 'total': len(raws), 'ready': len(entries), 'failed': failed}
+     args.out.with_suffix('.report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+     if not entries:
+         raise SystemExit('No valid shaders; no library written')
+diff --git a/tools/shaders/verify_vulkan_preshaders.py b/tools/shaders/verify_vulkan_preshaders.py
+--- a/tools/shaders/verify_vulkan_preshaders.py
++++ b/tools/shaders/verify_vulkan_preshaders.py
+@@ -11,7 +11,7 @@
+     if len(data) < 24 or len(data) > 256 * 1024 * 1024 or data[:8] != MAGIC:
+         raise ValueError('Invalid library size/magic')
+     version, count, checksum = struct.unpack_from('<IIQ', data, 8)
+-    if version != 1 or not 0 < count <= 16384 or fnv1a64(data[24:]) != checksum:
++    if version != 2 or not 0 < count <= 16384 or fnv1a64(data[24:]) != checksum:
+         raise ValueError('Invalid library version/count/checksum')
+     position, seen = 24, set()
+     for _ in range(count):
+@@ -30,7 +30,7 @@
+         seen.add((stage, container))
+         # Read the result's location tables to reach SPIR-V, then regenerate
+         # the entire wire message from independent Python ABI reflection.
+-        if len(result) < 72 or struct.unpack_from('<4I', result) != (0x33525653, 1, 1, stage):
++        if len(result) < 72 or struct.unpack_from('<4I', result) != (0x33525653, 2, 1, stage):
+             raise ValueError('Invalid shader result')
+         at = 64
+         for _ in range(2):
