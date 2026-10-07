@@ -1,0 +1,222 @@
+diff --git a/port/src/graphics/vulkan/CMakeLists.txt b/port/src/graphics/vulkan/CMakeLists.txt
+--- a/port/src/graphics/vulkan/CMakeLists.txt
++++ b/port/src/graphics/vulkan/CMakeLists.txt
+@@ -10,6 +10,10 @@
+ target_compile_definitions(sr_vulkan_core PUBLIC VK_NO_PROTOTYPES)
+ if(WIN32)
+   set(SR_VULKAN_DXC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.tools/dxc/bin/x64/dxc.exe" CACHE FILEPATH "DXC with SPIR-V support")
++elseif(ANDROID)
++  if(NOT SR_VULKAN_DXC OR NOT EXISTS "${SR_VULKAN_DXC}")
++    message(FATAL_ERROR "Android cross compilation requires explicit host SR_VULKAN_DXC")
++  endif()
+ else()
+   find_program(SR_VULKAN_DXC NAMES dxc REQUIRED)
+ endif()
+@@ -85,3 +89,8 @@
+     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:sr_vulkan_smoke>/shaders"
+     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${shader_dir}/triangle.vert.spv" "${shader_dir}/triangle.frag.spv" "$<TARGET_FILE_DIR:sr_vulkan_smoke>/shaders" VERBATIM)
+ endif()
++
++if(ANDROID)
++  target_compile_definitions(sr_vulkan_core PUBLIC VK_USE_PLATFORM_ANDROID_KHR _LIBCPP_ENABLE_EXPERIMENTAL)
++  target_link_libraries(sr_vulkan_core PUBLIC android log dl)
++endif()
+diff --git a/port/src/graphics/vulkan/context.h b/port/src/graphics/vulkan/context.h
+--- a/port/src/graphics/vulkan/context.h
++++ b/port/src/graphics/vulkan/context.h
+@@ -4,6 +4,7 @@
+ #include <atomic>
+ #include <functional>
+ namespace superman_returns::graphics::vulkan {
++bool ValidateRequiredDeviceFeatures(const VkPhysicalDeviceFeatures&,const VkPhysicalDeviceFeatures&,Error&);
+ class Context {
+ public:
+   Context() = default;
+diff --git a/port/src/graphics/vulkan/context.cpp b/port/src/graphics/vulkan/context.cpp
+--- a/port/src/graphics/vulkan/context.cpp
++++ b/port/src/graphics/vulkan/context.cpp
+@@ -5,6 +5,64 @@
+ #include <iostream>
+ #include <set>
+ namespace superman_returns::graphics::vulkan {
++bool ValidateRequiredDeviceFeatures(const VkPhysicalDeviceFeatures& available,const VkPhysicalDeviceFeatures& requested,Error& error) {
++  if(requested.robustBufferAccess && !available.robustBufferAccess) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: robustBufferAccess"};return false;}
++  if(requested.fullDrawIndexUint32 && !available.fullDrawIndexUint32) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: fullDrawIndexUint32"};return false;}
++  if(requested.imageCubeArray && !available.imageCubeArray) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: imageCubeArray"};return false;}
++  if(requested.independentBlend && !available.independentBlend) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: independentBlend"};return false;}
++  if(requested.geometryShader && !available.geometryShader) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: geometryShader"};return false;}
++  if(requested.tessellationShader && !available.tessellationShader) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: tessellationShader"};return false;}
++  if(requested.sampleRateShading && !available.sampleRateShading) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: sampleRateShading"};return false;}
++  if(requested.dualSrcBlend && !available.dualSrcBlend) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: dualSrcBlend"};return false;}
++  if(requested.logicOp && !available.logicOp) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: logicOp"};return false;}
++  if(requested.multiDrawIndirect && !available.multiDrawIndirect) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: multiDrawIndirect"};return false;}
++  if(requested.drawIndirectFirstInstance && !available.drawIndirectFirstInstance) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: drawIndirectFirstInstance"};return false;}
++  if(requested.depthClamp && !available.depthClamp) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: depthClamp"};return false;}
++  if(requested.depthBiasClamp && !available.depthBiasClamp) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: depthBiasClamp"};return false;}
++  if(requested.fillModeNonSolid && !available.fillModeNonSolid) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: fillModeNonSolid"};return false;}
++  if(requested.depthBounds && !available.depthBounds) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: depthBounds"};return false;}
++  if(requested.wideLines && !available.wideLines) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: wideLines"};return false;}
++  if(requested.largePoints && !available.largePoints) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: largePoints"};return false;}
++  if(requested.alphaToOne && !available.alphaToOne) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: alphaToOne"};return false;}
++  if(requested.multiViewport && !available.multiViewport) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: multiViewport"};return false;}
++  if(requested.samplerAnisotropy && !available.samplerAnisotropy) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: samplerAnisotropy"};return false;}
++  if(requested.textureCompressionETC2 && !available.textureCompressionETC2) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: textureCompressionETC2"};return false;}
++  if(requested.textureCompressionASTC_LDR && !available.textureCompressionASTC_LDR) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: textureCompressionASTC_LDR"};return false;}
++  if(requested.textureCompressionBC && !available.textureCompressionBC) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: textureCompressionBC"};return false;}
++  if(requested.occlusionQueryPrecise && !available.occlusionQueryPrecise) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: occlusionQueryPrecise"};return false;}
++  if(requested.pipelineStatisticsQuery && !available.pipelineStatisticsQuery) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: pipelineStatisticsQuery"};return false;}
++  if(requested.vertexPipelineStoresAndAtomics && !available.vertexPipelineStoresAndAtomics) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: vertexPipelineStoresAndAtomics"};return false;}
++  if(requested.fragmentStoresAndAtomics && !available.fragmentStoresAndAtomics) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: fragmentStoresAndAtomics"};return false;}
++  if(requested.shaderTessellationAndGeometryPointSize && !available.shaderTessellationAndGeometryPointSize) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderTessellationAndGeometryPointSize"};return false;}
++  if(requested.shaderImageGatherExtended && !available.shaderImageGatherExtended) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderImageGatherExtended"};return false;}
++  if(requested.shaderStorageImageExtendedFormats && !available.shaderStorageImageExtendedFormats) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderStorageImageExtendedFormats"};return false;}
++  if(requested.shaderStorageImageMultisample && !available.shaderStorageImageMultisample) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderStorageImageMultisample"};return false;}
++  if(requested.shaderStorageImageReadWithoutFormat && !available.shaderStorageImageReadWithoutFormat) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderStorageImageReadWithoutFormat"};return false;}
++  if(requested.shaderStorageImageWriteWithoutFormat && !available.shaderStorageImageWriteWithoutFormat) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderStorageImageWriteWithoutFormat"};return false;}
++  if(requested.shaderUniformBufferArrayDynamicIndexing && !available.shaderUniformBufferArrayDynamicIndexing) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderUniformBufferArrayDynamicIndexing"};return false;}
++  if(requested.shaderSampledImageArrayDynamicIndexing && !available.shaderSampledImageArrayDynamicIndexing) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderSampledImageArrayDynamicIndexing"};return false;}
++  if(requested.shaderStorageBufferArrayDynamicIndexing && !available.shaderStorageBufferArrayDynamicIndexing) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderStorageBufferArrayDynamicIndexing"};return false;}
++  if(requested.shaderStorageImageArrayDynamicIndexing && !available.shaderStorageImageArrayDynamicIndexing) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderStorageImageArrayDynamicIndexing"};return false;}
++  if(requested.shaderClipDistance && !available.shaderClipDistance) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderClipDistance"};return false;}
++  if(requested.shaderCullDistance && !available.shaderCullDistance) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderCullDistance"};return false;}
++  if(requested.shaderFloat64 && !available.shaderFloat64) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderFloat64"};return false;}
++  if(requested.shaderInt64 && !available.shaderInt64) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderInt64"};return false;}
++  if(requested.shaderInt16 && !available.shaderInt16) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderInt16"};return false;}
++  if(requested.shaderResourceResidency && !available.shaderResourceResidency) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderResourceResidency"};return false;}
++  if(requested.shaderResourceMinLod && !available.shaderResourceMinLod) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: shaderResourceMinLod"};return false;}
++  if(requested.sparseBinding && !available.sparseBinding) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: sparseBinding"};return false;}
++  if(requested.sparseResidencyBuffer && !available.sparseResidencyBuffer) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: sparseResidencyBuffer"};return false;}
++  if(requested.sparseResidencyImage2D && !available.sparseResidencyImage2D) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: sparseResidencyImage2D"};return false;}
++  if(requested.sparseResidencyImage3D && !available.sparseResidencyImage3D) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: sparseResidencyImage3D"};return false;}
++  if(requested.sparseResidency2Samples && !available.sparseResidency2Samples) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: sparseResidency2Samples"};return false;}
++  if(requested.sparseResidency4Samples && !available.sparseResidency4Samples) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: sparseResidency4Samples"};return false;}
++  if(requested.sparseResidency8Samples && !available.sparseResidency8Samples) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: sparseResidency8Samples"};return false;}
++  if(requested.sparseResidency16Samples && !available.sparseResidency16Samples) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: sparseResidency16Samples"};return false;}
++  if(requested.sparseResidencyAliased && !available.sparseResidencyAliased) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: sparseResidencyAliased"};return false;}
++  if(requested.variableMultisampleRate && !available.variableMultisampleRate) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: variableMultisampleRate"};return false;}
++  if(requested.inheritedQueries && !available.inheritedQueries) {error={"Device feature",VK_ERROR_FEATURE_NOT_PRESENT,"Required Vulkan feature unavailable: inheritedQueries"};return false;}
++  error={};return true;
++}
+ void Context::Log(const std::string &s) const {
+   if (logger)
+     logger(s);
+@@ -235,6 +293,11 @@
+     }
+     extensions.push_back(VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME);
+   }
++  if(requested_features) {
++    if(!f.vkGetPhysicalDeviceFeatures) {e={"Device feature",VK_ERROR_INITIALIZATION_FAILED,"Vulkan feature query unavailable"};return false;}
++    VkPhysicalDeviceFeatures supported{};f.vkGetPhysicalDeviceFeatures(physical,&supported);
++    if(!ValidateRequiredDeviceFeatures(supported,*requested_features,e))return false;
++  }
+   VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+   ci.queueCreateInfoCount = uint32_t(queues.size());
+   ci.pQueueCreateInfos = queues.data();
+diff --git a/port/src/graphics/vulkan/game_pipeline.cpp b/port/src/graphics/vulkan/game_pipeline.cpp
+--- a/port/src/graphics/vulkan/game_pipeline.cpp
++++ b/port/src/graphics/vulkan/game_pipeline.cpp
+@@ -207,7 +207,13 @@
+   // Vulkan's own header must agree too; never pass arbitrary/truncated bytes to the driver.
+   if(!initial.empty()) {uint32_t fields[4];std::memcpy(fields,initial.data(),16);if(fields[0]<32 || fields[0]>initial.size() || fields[1]!=VK_PIPELINE_CACHE_HEADER_VERSION_ONE || fields[2]!=c_.properties.vendorID || fields[3]!=c_.properties.deviceID || std::memcmp(initial.data()+16,c_.properties.pipelineCacheUUID,16)) initial.clear();}
+   VkPipelineCacheCreateInfo cache{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};cache.initialDataSize=initial.size();cache.pInitialData=initial.data();
+-  if(!Check(c_.f.vkCreatePipelineCache(c_.device,&cache,nullptr,&driver_cache_),"Vulkan driver pipeline cache",e)) return false;
++  auto cache_result=c_.f.vkCreatePipelineCache(c_.device,&cache,nullptr,&driver_cache_);
++  if(cache_result!=VK_SUCCESS && !initial.empty() && cache_result!=VK_ERROR_DEVICE_LOST && cache_result!=VK_ERROR_OUT_OF_HOST_MEMORY && cache_result!=VK_ERROR_OUT_OF_DEVICE_MEMORY) {
++    c_.Log("Driver rejected stored pipeline cache; rebuilding empty cache");
++    cache.initialDataSize=0;cache.pInitialData=nullptr;
++    cache_result=c_.f.vkCreatePipelineCache(c_.device,&cache,nullptr,&driver_cache_);
++  }
++  if(!Check(cache_result,"Vulkan driver pipeline cache",e)) return false;
+   cache_path_=path;e={};return true;
+ }
+ bool GamePipelineStore::Validate(const shaders::CompiledShader& vs,const shaders::CompiledShader* ps,Error& e) const {
+diff --git a/port/src/graphics/vulkan/platform/android_provider.cpp b/port/src/graphics/vulkan/platform/android_provider.cpp
+--- a/port/src/graphics/vulkan/platform/android_provider.cpp
++++ b/port/src/graphics/vulkan/platform/android_provider.cpp
+@@ -5,8 +5,8 @@
+ #include "../immediate.h"
+ #include "../frame_loop.h"
+ #include "../../../native_renderer/native_renderer.h"
+-#include "../../../native_renderer/hang_watchdog.h"
+-#include <rex/ui/surface_win.h>
++
++#include <rex/ui/surface_android.h>
+ #include <rex/logging.h>
+ #include <algorithm>
+ #include <atomic>
+@@ -36,11 +36,11 @@
+   uint64_t texture_serial=1000000;bool dummies=false;
+   Host(NativeProviderConfig cfg):config(std::move(cfg)) {context.logger=[](const std::string& line){REXLOG_INFO("native Vulkan: {}",line);};}
+   ~Host() {ready_game.store(nullptr);immediate.reset();compositor.reset();resources.reset();game.reset();shaders.reset();}
+-  bool Initialize(rex::ui::AndroidWindowSurface& window,Error& e) {
++  bool Initialize(rex::ui::AndroidNativeWindowSurface& window,Error& e) {
+     std::array<const char*,2> extensions{VK_KHR_SURFACE_EXTENSION_NAME,VK_KHR_ANDROID_SURFACE_EXTENSION_NAME};
+     if(!context.CreateInstance(extensions,config.validation,e)) return false;
+     auto create=reinterpret_cast<PFN_vkCreateAndroidSurfaceKHR>(context.Proc()(context.instance,"vkCreateAndroidSurfaceKHR"));
+-    if(!create) {e={"Win32 surface",VK_ERROR_EXTENSION_NOT_PRESENT,"vkCreateAndroidSurfaceKHR unavailable"};return false;}
++    if(!create) {e={"Android surface",VK_ERROR_EXTENSION_NOT_PRESENT,"vkCreateAndroidSurfaceKHR unavailable"};return false;}
+     VkAndroidSurfaceCreateInfoKHR surface_info{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};surface_info.window=window.window();VkSurfaceKHR surface=VK_NULL_HANDLE;
+     if(!Check(create(context.instance,&surface_info,nullptr,&surface),"Create SDK window surface",e)) return false;
+     VkPhysicalDeviceFeatures features{};features.shaderSampledImageArrayDynamicIndexing=features.shaderStorageBufferArrayDynamicIndexing=features.independentBlend=features.shaderClipDistance=features.shaderCullDistance=features.robustBufferAccess=VK_TRUE;
+@@ -54,7 +54,7 @@
+     ShaderLookup lookup=[this](const guest::ShaderCapture& capture) {auto key=shaders->Request(capture.container,capture.vertex?shaders::ShaderStage::kVertex:shaders::ShaderStage::kPixel);return shaders->Poll(key);};
+     TextureDecoder decode=[](const guest::TextureCapture& capture,guest::LinearTexture& result,std::string& error){return guest::DecodeTextureLayout(capture.fetch,capture.memory,result,error);};
+     game=std::make_unique<GameFrame>(context,gpu_mutex,std::move(lookup),std::move(decode));
+-    game->compilation_progress=[] {native::HangWatchdogBeat();};
++
+     resources=std::make_unique<ResourceStore>(context);compositor=std::make_unique<FrontbufferCompositor>(context);immediate=std::make_unique<ImmediateRenderer>(context);
+     return game->Initialize(config.driver_cache,e) && compositor->Initialize(e) && immediate->Initialize(e);
+   }
+@@ -118,7 +118,7 @@
+     if(host_->game) host_->game->StopAsync();
+     SetWindowSurfaceFromUIThread(nullptr,nullptr);DisconnectPaintingFromSurfaceFromUIThreadImpl();for(auto& mailbox:mailbox_) mailbox={};}
+   bool Initialize() {return InitializeCommonSurfaceIndependent();}
+-  rex::ui::Surface::TypeFlags GetSupportedSurfaceTypes() const override {return rex::ui::Surface::kTypeFlag_AndroidWindow;}
++  rex::ui::Surface::TypeFlags GetSupportedSurfaceTypes() const override {return rex::ui::Surface::kTypeFlag_AndroidNativeWindow;}
+   bool CaptureGuestOutput(rex::ui::RawImage& image) override;
+   bool Submit(guest::RenderPacket&& packet,std::string& diagnostic) {
+     auto* swap=std::get_if<guest::SwapPacket>(&packet);auto gamma=swap?swap->gamma:nullptr;bool gamma_enabled=swap && swap->gamma_enabled;
+@@ -148,19 +148,19 @@
+ protected:
+   SurfacePaintConnectResult ConnectOrReconnectPaintingToSurfaceFromUIThread(rex::ui::Surface& surface,uint32_t width,uint32_t height,bool was_paintable,bool& implicit_vsync) override {
+     implicit_vsync=false;std::lock_guard lock(host_->gpu_mutex);Error e;
+-    auto& window=static_cast<rex::ui::AndroidWindowSurface&>(surface);
++    auto& window=static_cast<rex::ui::AndroidNativeWindowSurface&>(surface);
+     if(!host_->context.device) {
+       if(!host_->Initialize(window,e)) {host_->initialization_error=e;Report(e);return SurfacePaintConnectResult::kFailure;}
+       host_->initialization_error={};host_->ready_game.store(host_->game.get(),std::memory_order_release);
+     }
+-    else if(hwnd_ && hwnd_!=window.window()) {
++    else if(!host_->context.surface || hwnd_!=window.window()) {
+       if(!frames_.Retire(host_->context,e)) {Report(e);return SurfacePaintConnectResult::kFailure;}swapchain_.Destroy();
+       auto create=reinterpret_cast<PFN_vkCreateAndroidSurfaceKHR>(host_->context.Proc()(host_->context.instance,"vkCreateAndroidSurfaceKHR"));
+       VkAndroidSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};info.window=window.window();VkSurfaceKHR replacement=VK_NULL_HANDLE;
+       if(!Check(create(host_->context.instance,&info,nullptr,&replacement),"Reconnect SDK window surface",e)) {Report(e);return SurfacePaintConnectResult::kFailure;}
+       VkBool32 supported=VK_FALSE;auto result=host_->context.f.vkGetPhysicalDeviceSurfaceSupportKHR(host_->context.physical,host_->context.present_family,replacement,&supported);
+       if(result!=VK_SUCCESS || !supported) {host_->context.f.vkDestroySurfaceKHR(host_->context.instance,replacement,nullptr);e={"Reconnect surface",result==VK_SUCCESS?VK_ERROR_FEATURE_NOT_PRESENT:result,"Existing presentation queue cannot present on the new window"};Report(e);return SurfacePaintConnectResult::kFailure;}
+-      host_->context.f.vkDestroySurfaceKHR(host_->context.instance,host_->context.surface,nullptr);host_->context.surface=replacement;
++      if(host_->context.surface)host_->context.f.vkDestroySurfaceKHR(host_->context.instance,host_->context.surface,nullptr);host_->context.surface=replacement;
+     }
+     hwnd_=window.window();
+     if(was_paintable && swapchain_.handle && requested_extent_.width==width && requested_extent_.height==height) return SurfacePaintConnectResult::kSuccessUnchanged;
+@@ -168,7 +168,8 @@
+     requested_extent_={width,height};return SurfacePaintConnectResult::kSuccess;
+   }
+   void DisconnectPaintingFromSurfaceFromUIThreadImpl() override {
+-    std::lock_guard lock(host_->gpu_mutex);if(!host_->context.device) return;Error e;frames_.Retire(host_->context,e);swapchain_.Destroy();requested_extent_={};
++    std::lock_guard lock(host_->gpu_mutex);if(!host_->context.device) return;Error e;if(!frames_.Retire(host_->context,e))Report(e);swapchain_.Destroy();requested_extent_={};
++    if(host_->context.surface){host_->context.f.vkDestroySurfaceKHR(host_->context.instance,host_->context.surface,nullptr);host_->context.surface=VK_NULL_HANDLE;}hwnd_=nullptr;
+   }
+   bool RefreshGuestOutputImpl(uint32_t index,uint32_t,uint32_t,std::function<bool(GuestOutputRefreshContext&)> callback,bool& is8) override {
+     // The SDK hands the refresher an exclusive writable slot; consumers only read
+diff --git a/tests/vulkan/test_context.cpp b/tests/vulkan/test_context.cpp
+--- a/tests/vulkan/test_context.cpp
++++ b/tests/vulkan/test_context.cpp
+@@ -230,6 +230,7 @@
+ 
+ SR_TEST(optional_device_features_are_explicit) {
+   auto f = Fake();
++  f.vkGetPhysicalDeviceFeatures=[](VkPhysicalDevice,VkPhysicalDeviceFeatures* available){*available={};available->shaderStorageBufferArrayDynamicIndexing=VK_TRUE;};
+   f.vkEnumeratePhysicalDevices = OneDevice;
+   f.vkGetPhysicalDeviceProperties2 = DeviceProperties;
+   f.vkEnumerateDeviceExtensionProperties = DeviceExtensions;

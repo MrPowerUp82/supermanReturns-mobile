@@ -1,0 +1,73 @@
+diff --git a/port/src/graphics/shaders/vulkan_shader_service.h b/port/src/graphics/shaders/vulkan_shader_service.h
+--- a/port/src/graphics/shaders/vulkan_shader_service.h
++++ b/port/src/graphics/shaders/vulkan_shader_service.h
+@@ -30,6 +30,8 @@
+   uint32_t compiler_workers=1;
+   // Local, game-derived SPIR-V library; misses still use the runtime compiler.
+   std::filesystem::path library;
++  bool precompiled_only=false;
++  std::filesystem::path missing_dump_dir;
+ };
+ // Platform runner receives individual arguments, never a shell command.
+ using ShaderProcess=std::function<bool(std::span<const std::filesystem::path>,std::chrono::milliseconds,std::stop_token,std::string&)>;
+diff --git a/port/src/graphics/shaders/vulkan_shader_service.cpp b/port/src/graphics/shaders/vulkan_shader_service.cpp
+--- a/port/src/graphics/shaders/vulkan_shader_service.cpp
++++ b/port/src/graphics/shaders/vulkan_shader_service.cpp
+@@ -61,7 +61,8 @@
+   size_t precompiled_count=0;std::string library_diagnostic;
+   Impl(VulkanShaderConfig c,ShaderProcess p):config(std::move(c)),process(std::move(p)) {
+     LoadLibrary();
+-    for(uint32_t i=0;i<std::clamp(config.compiler_workers,1u,4u);++i) threads.emplace_back([this](std::stop_token token){Run(token);});
++    if(config.precompiled_only && !precompiled_count && library_diagnostic.empty()) library_diagnostic="Precompiled shader library is required";
++    if(!config.precompiled_only) for(uint32_t i=0;i<std::clamp(config.compiler_workers,1u,4u);++i) threads.emplace_back([this](std::stop_token token){Run(token);});
+   }
+   void LoadLibrary() {
+     if(config.library.empty()) return;
+@@ -132,6 +133,22 @@
+     if(found->second.stage==stage && std::equal(bytes.begin(),bytes.end(),found->second.container.begin(),found->second.container.end())) return hash;
+     if(!++hash) hash=1;
+   }
++  if(impl_->config.precompiled_only) {
++    ShaderResult result{ShaderPoll::failed,{},"Missing precompiled shader: key="+std::to_string(hash)+" stage="+(stage==ShaderStage::kVertex?"vs":"ps")};
++    try {
++      if(impl_->config.missing_dump_dir.empty()) throw std::runtime_error("Missing dump directory is not configured");
++      std::filesystem::create_directories(impl_->config.missing_dump_dir);
++      auto stem=std::to_string(hash);auto name=stem+(stage==ShaderStage::kVertex?".vs.bin":".ps.bin");
++      auto raw=impl_->config.missing_dump_dir/name;
++      std::ofstream file(raw,std::ios::binary|std::ios::trunc);
++      if(!file.write(reinterpret_cast<const char*>(bytes.data()),bytes.size()) || !file.flush()) throw std::runtime_error("Cannot write missing shader container");
++      std::ofstream metadata(impl_->config.missing_dump_dir/(stem+".json"),std::ios::trunc);
++      metadata<<"{\"schema\":1,\"request_key\":\""<<hash<<"\",\"container_fnv1a64\":\""<<HashBytes(bytes)<<"\",\"stage\":\""<<(stage==ShaderStage::kVertex?"vs":"ps")<<"\",\"bytes\":"<<bytes.size()<<",\"container\":\""<<name<<"\"}\n";
++      if(!metadata.flush()) throw std::runtime_error("Cannot write missing shader metadata");
++      result.diagnostic+=" container="+raw.string();
++    } catch(const std::exception& error) {result.diagnostic+="; dump failed: "+std::string(error.what());}
++    impl_->jobs.emplace(hash,Impl::Job{stage,{bytes.begin(),bytes.end()},std::move(result)});return hash;
++  }
+   impl_->jobs.emplace(hash,Impl::Job{stage,{bytes.begin(),bytes.end()},{}});impl_->queue.push_back(hash);impl_->cv.notify_one();return hash;
+ }
+ ShaderResult VulkanShaderService::Poll(ShaderKey key) const {
+diff --git a/port/src/graphics/vulkan/platform/android_provider.cpp b/port/src/graphics/vulkan/platform/android_provider.cpp
+--- a/port/src/graphics/vulkan/platform/android_provider.cpp
++++ b/port/src/graphics/vulkan/platform/android_provider.cpp
+@@ -47,7 +47,8 @@
+     if(!context.OpenDevice(surface,config.gpu_uuid,e,&features,true)) return false;
+     if(!(context.selected.queues[context.graphics_family].flags&VK_QUEUE_COMPUTE_BIT)) {e={"Game queue",VK_ERROR_FEATURE_NOT_PRESENT,"Graphics queue must also support compute resolves"};return false;}
+     config.shaders.compiler_workers=2;
+-    shaders=std::make_unique<shaders::VulkanShaderService>(config.shaders,AndroidShaderProcess());
++    shaders=std::make_unique<shaders::VulkanShaderService>(config.shaders,shaders::ShaderProcess{});
++    if(config.shaders.precompiled_only && (!shaders->LibraryDiagnostic().empty() || !shaders->PrecompiledCount())) {e={"Shader library",VK_ERROR_INITIALIZATION_FAILED,shaders->LibraryDiagnostic()};return false;}
+     REXLOG_INFO("native Vulkan: {} precompiled shaders from {}",shaders->PrecompiledCount(),config.shaders.library.string());
+     if(!shaders->LibraryDiagnostic().empty()) REXLOG_WARN("native Vulkan: pre-shader library unavailable: {}; compiling misses at runtime",shaders->LibraryDiagnostic());
+     ShaderLookup lookup=[this](const guest::ShaderCapture& capture) {auto key=shaders->Request(capture.container,capture.vertex?shaders::ShaderStage::kVertex:shaders::ShaderStage::kPixel);return shaders->Poll(key);};
+@@ -238,7 +239,10 @@
+ };
+ }
+ std::unique_ptr<rex::ui::GraphicsProvider> CreateNativeVulkanProvider(NativeProviderConfig config) {
+-  for(auto& path:{config.shaders.python,config.shaders.script,config.shaders.emitter,config.shaders.common,config.shaders.dxc}) if(!std::filesystem::is_regular_file(path)) {REXLOG_ERROR("native Vulkan: required shader tool missing: {}",path.string());return {};}
++  if(config.shaders.precompiled_only) {
++    shaders::VulkanShaderService library(config.shaders,{});
++    if(!library.PrecompiledCount() || !library.LibraryDiagnostic().empty()) {REXLOG_ERROR("native Vulkan: invalid precompiled library: {}",library.LibraryDiagnostic());return {};}
++  } else for(auto& path:{config.shaders.python,config.shaders.script,config.shaders.emitter,config.shaders.common,config.shaders.dxc}) if(!std::filesystem::is_regular_file(path)) {REXLOG_ERROR("native Vulkan: required shader tool missing: {}",path.string());return {};}
+   return std::make_unique<Provider>(std::move(config));
+ }
+ }

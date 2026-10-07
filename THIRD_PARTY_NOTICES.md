@@ -43,3 +43,12 @@ As modificações locais do runtime ficam em `tools/runtime-patches/`: sincroniz
 de nomes de threads, limpeza periódica dos caches Vulkan, limite opcional de
 altura de render targets e liberação dos buffers temporários de upload após
 sincronização da GPU. Os avisos upstream permanecem preservados.
+# PC native Vulkan renderer preparation
+
+The optional native port snapshots selected local PC renderer sources in the
+private `.tools/pc-native` tree. `source-lock.json` records the PC commit,
+local modifications, source SHA-256 hashes and applied adaptation patch hashes.
+The PC checkout is not modified. Sources derived from Xenia/ReXGlue retain
+their original BSD notices; the referenced crazyriddler/rexglue-native-kit
+revision 136bc6c4 supplies no license file. This preparation does not grant
+additional redistribution rights. Game-derived shader libraries remain private.

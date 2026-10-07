@@ -1,0 +1,1616 @@
+diff --git a/port/src/native_renderer/native_frontend.h b/port/src/native_renderer/native_frontend.h
+--- a/port/src/native_renderer/native_frontend.h
++++ b/port/src/native_renderer/native_frontend.h
+@@ -1,3 +1,6 @@
++#if defined(__ANDROID__)
++#include "native_frontend_android.h"
++#else
+ #pragma once
+ 
+ #include <cstdint>
+@@ -42,3 +45,5 @@
+ };
+ 
+ } // namespace superman_returns::native
++
++#endif
+diff --git a/port/src/native_renderer/native_renderer.h b/port/src/native_renderer/native_renderer.h
+--- a/port/src/native_renderer/native_renderer.h
++++ b/port/src/native_renderer/native_renderer.h
+@@ -1,3 +1,6 @@
++#if defined(__ANDROID__)
++#include "native_frontend_android.h"
++#else
+ // Ported from crazyriddler/rexglue-native-kit @136bc6c4,
+ // reference/conan/port/src/native/native_renderer.h (Conan native renderer).
+ // The kit ships no license file at that revision; parts derived from Xenia /
+@@ -689,3 +692,5 @@
+ 
+ }  // namespace superman_returns::native
+ 
++
++#endif
+diff --git a/port/src/native_renderer/shader_registry.cpp b/port/src/native_renderer/shader_registry.cpp
+--- a/port/src/native_renderer/shader_registry.cpp
++++ b/port/src/native_renderer/shader_registry.cpp
+@@ -89,6 +89,11 @@
+ };
+ 
+ const LoadedLibrary& Library() {
++#if defined(__ANDROID__)
++  static const LoadedLibrary loaded=[] {LoadedLibrary result;result.where="Vulkan uses .srvk shader library";return result;}();
++  return loaded;
++#else
++
+   static const LoadedLibrary loaded = [] {
+     LoadedLibrary l;
+     if (!REXCVAR_GET(sr_native_preshaders)) {
+@@ -133,6 +138,7 @@
+     return l;
+   }();
+   return loaded;
++#endif
+ }
+ 
+ // Kit: hash [c, c + virtual + physical) exactly like the corpus (legacy path,
+@@ -274,6 +280,7 @@
+ // very bytes, which is what LoadShader will ask for.
+ void OfferTranslation(uint8_t* base, uint32_t container, const GuestShaderInfo& info) {
+   if (Library().ok) return;
++#if !defined(__ANDROID__)
+   ShaderTranslator& translator = ShaderTranslator::Get();
+   if (!translator.Enabled()) return;
+   static std::mutex mutex;
+@@ -285,6 +292,7 @@
+   ShaderContainerHeader header;
+   if (!ParseShaderContainerHeader(base + container, GuestAvailable(container), header)) return;
+   translator.Offer(info.container_hash, info.is_vertex, base + container, header.total_size());
++#endif
+ }
+ 
+ // Unrecognised containers, for comparing against artifacts/shaders/raw
+diff --git a/port/src/native_renderer/native_frontend_android.h b/port/src/native_renderer/native_frontend_android.h
+new file mode 100644
+--- /dev/null
++++ b/port/src/native_renderer/native_frontend_android.h
+@@ -0,0 +1,217 @@
++// Extracted from PC native_renderer.cpp capture path; see source-lock.json for provenance.
++#pragma once
++#include "pm4_mirror.h"
++#include "buffer_content.h"
++#include "../graphics/guest/captured_batch.h"
++#include "../graphics/guest/render_packet.h"
++#include "../graphics/guest/texture_capture.h"
++#include <atomic>
++#include <array>
++#include <map>
++#include <unordered_map>
++#include <vector>
++#include <deque>
++#include <thread>
++#include <mutex>
++#include <condition_variable>
++#include <functional>
++#include <tuple>
++namespace rex::memory {class Memory;}
++namespace superman_returns::native {
++extern int g_current_pass,g_guest_pass;
++void NoteGuestDevice(uint32_t dev);
++struct CapturedTextureEntry {
++  std::shared_ptr<const graphics::guest::TextureCapture> snapshot;
++  uint64_t content_hash=0, checked_frame=~0ull;
++  uint32_t watch_seq=0;
++  uint64_t next_check_frame=0;
++  uint32_t stable_checks=0;
++  uint64_t failed_frame=~0ull;
++  std::string failure;
++};
++
++struct RingConstants {
++  bool pixel;
++  uint32_t start, count, ring_ptr;
++};
++
++class NativeFrontend {
++public:
++  using PacketSink=std::function<bool(graphics::guest::RenderPacket&&,std::string&)>;
++  NativeFrontend()=default;
++  ~NativeFrontend();
++  static NativeFrontend& Get();
++  bool InstallPacketSink(PacketSink,std::function<void()>);
++  bool SubmitCapturedBatch(std::unique_ptr<graphics::guest::WorkBatch>,std::string&);
++  bool Drain(std::string&);
++  void ShutdownWorker();
++  // --- Guest D3D entry points -------------------------------------------
++  void OnSwap(uint8_t* base, uint32_t front_buffer_texture, uint64_t swap_number = 0);
++  // BeginVertices/EndVertices or DrawVerticesUP (vertex data at `data`).
++  void DrawInlineVertices(uint8_t* base, uint32_t prim, uint32_t data, uint32_t vertex_count,
++                          uint32_t stride);
++  void DrawVertices(uint8_t* base, uint32_t prim, uint32_t start_vertex, uint32_t vertex_count);
++  void DrawIndexedVertices(uint8_t* base, uint32_t prim, int32_t base_vertex,
++                           uint32_t start_index, uint32_t index_count);
++  // Resolve(dev, Flags, pSrcRect, pDestTexture, pDestPoint, Level, Slice,
++  //         pClearColor, ClearZ, ClearStencil, pParameters)
++  void Resolve(uint8_t* base, uint32_t flags, uint32_t src_rect, uint32_t dest_texture,
++               uint32_t dest_point, uint32_t clear_color, float clear_z, uint32_t clear_stencil,
++               uint32_t level=0,uint32_t slice=0);
++  // BeginTiling(dev, Flags, Count, pTileRects, pClearColor, ClearZ, ClearStencil)
++  void BeginTiling(uint8_t* base, uint32_t count, uint32_t rects, uint32_t clear_color,
++                   float clear_z, uint32_t clear_stencil);
++  void EndTiling();
++  // Shared XDK clear entry; color is linear float4 (including HDR values).
++  void Clear(uint8_t* base, uint32_t count, uint32_t rects, uint32_t flags, const float color[4],
++             float z, uint32_t stencil);
++  // GpuBeginShaderConstantF4 handed the game a ring pointer for `count`
++  // float4 constants: the game writes the ring copy (not the device shadow).
++  // Mirrored back into the shadow before the next draw.
++  void NoteRingConstants(bool pixel, uint32_t start, uint32_t count, uint32_t ring_ptr);
++  // PM4 mirror: parse the XDK command segment written since the last sync.
++  void SyncRing(uint8_t* base, uint32_t dev);
++  // A/B mode: after the Xenos CP processed guest swap N, dump the Xenos
++  // results of this frame's resolves (read back into guest memory).
++
++  // After a command segment switch: restart parsing at the new write pointer.
++  void ResyncRing(uint8_t* base, uint32_t dev);
++  // Shader literal constants loaded by LOAD_ALU_CONSTANT at shader bind.
++  void ApplyLoadAluConstants(uint8_t* base, uint32_t dev, uint32_t table, uint32_t data);
++  // Pass hook bracket end (debug: optional mid-frame dump).
++  void OnPassEnd(int pass);
++  // Guest buffer contents changed (VB/IB Unlock).
++  void InvalidateGuestRange(uint32_t address, uint32_t size);
++
++  struct Stats {
++    uint64_t packets_decoded = 0, packet_errors = 0, packet_swaps = 0;
++    uint64_t packet_texture_refs = 0, packet_texture_errors = 0, packet_shader_missing = 0;
++    uint64_t draws = 0;
++    uint64_t draws_skipped = 0;
++    uint64_t skip_shader = 0, skip_pso = 0, skip_prim = 0, skip_rt = 0, skip_vb = 0;
++    // Draws skipped for want of a pipeline, per (vs, ps) pair and render pass.
++    std::map<std::tuple<uint64_t, uint64_t, int>, uint64_t> skip_pso_pairs;
++    uint64_t buffer_watch_dirty = 0;
++    uint64_t buffer_hash_dirty = 0;
++    uint64_t edram_reinterprets = 0;
++    uint64_t shader_pending_draws = 0;
++    uint64_t resolves = 0;
++    uint64_t resolve_textures_created = 0;
++    uint64_t pso_created = 0;
++    double pso_create_ms = 0.0;
++    uint64_t pso_precompiled_hits = 0;
++    uint64_t pso_async_requests = 0, pso_async_skipped_draws = 0;
++    uint64_t a2c_draws[32] = {}, alpha_test_draws[32] = {};
++    uint64_t textures_created = 0;
++    uint64_t textures_reloaded = 0;
++    uint64_t edram_alias_clears = 0;
++    uint64_t buffer_partial_uploads = 0;
++    uint64_t gpu_wait_us = 0;
++    uint64_t buffer_uploads = 0, buffer_upload_bytes = 0, invalidations = 0, invalidated_bytes = 0;
++    // Per pass (index = g_current_pass): drawn / skipped, and last skip reason.
++    uint64_t pass_draws[32] = {};
++    uint64_t pass_skips[32] = {};
++    const char* pass_last_skip[32] = {};
++  };
++  const Stats& stats() const {return stats_;}
++private:
++  Pm4Mirror mirror_;
++  Pm4Mirror capture_mirror_;
++  uint64_t capture_serial_ = 0;
++  bool capture_tiling_active_ = false;
++  std::map<std::array<uint32_t,6>, CapturedTextureEntry> captured_textures_;
++  std::vector<uint32_t> mirror_snapshot_;
++  uint32_t ring_last_ = 0;
++  uint64_t ring_resyncs_ = 0;
++  std::vector<RingConstants> pending_ring_constants_;
++  uint64_t swap_number_ = 0;
++  uint32_t pass_draw_index_[32] = {};
++  uint32_t trace_draws_ = 0;
++  using BufferPlan = graphics::guest::BufferPlan;
++  using StreamPlan = graphics::guest::StreamPlan;
++  using Op = graphics::guest::Op;
++  using WorkCmd = graphics::guest::WorkCmd;
++  using WorkBatch = graphics::guest::WorkBatch;
++  // Front end (guest threads, front_mutex_).
++  void BeginCmd(Op op);
++  void EndCmd(uint8_t* base);
++  void CaptureTextures(uint8_t* base);
++  void CaptureBytes(uint8_t* base, uint32_t address, uint32_t length);
++  void CaptureDevice(uint8_t* base, uint32_t dev);
++  void CaptureRing(uint8_t* base, uint32_t dev);
++  BufferPlan PlanBuffer(uint8_t* base, uint32_t address, uint32_t size, uint32_t decl,
++                        uint32_t stride, uint32_t format, uint32_t phase, uint32_t need_begin,
++                        uint32_t need_end, bool& ok, uint32_t reset_index = UINT32_MAX);
++  struct VertexRange {
++    uint32_t first = 0, end = ~0u;
++    bool resolved = true;
++    // Indexed draw source (resolved lazily).
++    uint32_t ib_phys = 0, ib_size = 0, start_index = 0, index_count = 0;
++    int32_t base_vertex = 0;
++    bool index32 = false;
++    void Resolve();
++    uint32_t index_endian = 0;
++    uint32_t reset_index = UINT32_MAX;
++  };
++  bool PlanStreams(uint8_t* base, uint32_t dev, uint32_t decl, VertexRange* range);
++  void FlushBatch();
++  void WaitWorkerIdle(uint64_t batches);
++  bool worker_mode_ = false;
++  bool worker_mode_checked_ = false;
++  PacketSink packet_sink_;std::function<void()> cancel_packet_sink_;
++  bool packet_sink_failed_=false;
++  std::atomic<bool> worker_stop_{false};
++  std::mutex front_mutex_;
++  std::unique_ptr<WorkBatch> batch_;
++  WorkCmd cur_;
++  uint8_t* guest_base_ = nullptr;
++  uint64_t exec_copies_before_ = 0;
++  std::atomic<uint64_t> front_invalidations_{0}, front_invalidated_bytes_{0};
++  // Guest-side buffer contents tracking (decides what each draw uploads).
++  struct TrackedBuffer {
++    uint32_t address = 0, size = 0;
++    bool dirty = false;
++    std::vector<std::pair<uint32_t, uint32_t>> clean;  // [begin, end) while dirty
++    uint64_t invalidation_stamp = 0;
++    uint32_t watch_seq = 0, checked_seq = 0;  // physical write watch
++    bool watched = false;
++    BufferContent content;
++  };
++  static constexpr uint32_t kHashedBufferMax = 32 * 1024;
++  uint64_t front_frame_ = 0;  // guest swaps seen by the front end
++  // Node-based: TrackedBuffer pointers stay valid (page index below).
++  std::unordered_map<uint64_t, TrackedBuffer> tracked_;
++  uint64_t invalidation_stamp_ = 0;
++  struct FrontStreamCache {
++    uint32_t address = 0, size = 0, decl = 0, stride = 0, format = 0, phase = 0;
++    uint64_t key = 0;
++    TrackedBuffer* tracked = nullptr;
++  } front_stream_cache_[17];
++  // Worker.
++  void WorkerMain();
++  void Execute(uint8_t* base, const WorkBatch& batch, const WorkCmd& cmd);
++  std::thread worker_;
++  std::mutex queue_mutex_;
++  std::condition_variable queue_cv_, done_cv_;
++  std::deque<std::unique_ptr<WorkBatch>> work_queue_;
++  std::vector<std::unique_ptr<WorkBatch>> free_batches_;
++  uint64_t batches_submitted_ = 0, batches_done_ = 0;
++  uint64_t prev_swap_batches_ = 0;  // batches submitted up to the previous swap
++  bool DynamicVertexFetch(uint8_t*,uint32_t);
++  bool RefreshTrackedBuffer(TrackedBuffer&);
++  static std::pair<uint32_t,uint32_t> OnPhysicalWrite(void*,uint32_t,uint32_t,bool);
++  uint32_t ArmTextureWatch(uint32_t,uint32_t);
++  bool TextureWrittenSince(uint32_t,uint32_t,uint32_t) const;
++  void FlushRingConstants(uint8_t*,uint32_t);
++  std::unique_ptr<std::atomic<uint32_t>[]> page_write_seq_;
++  std::atomic<uint32_t> write_seq_{1};
++  bool texture_watch_=false;
++  rex::memory::Memory* watch_memory_=nullptr;void* watch_handle_=nullptr;
++  std::unordered_map<uint32_t,std::vector<TrackedBuffer*>> buffer_pages_;
++  Stats stats_;
++  std::recursive_mutex mutex_;
++  int trace_state_=0;
++  std::string worker_error_;
++};
++using Renderer=NativeFrontend;
++}
+diff --git a/port/src/native_renderer/native_frontend_android.cpp b/port/src/native_renderer/native_frontend_android.cpp
+new file mode 100644
+--- /dev/null
++++ b/port/src/native_renderer/native_frontend_android.cpp
+@@ -0,0 +1,1247 @@
++#include "native_frontend_android.h"
++#include "guest_reads_android.h"
++#include "game_profile.h"
++#include "shader_registry.h"
++#include "index_endian.h"
++#include "texture_write_audit.h"
++#include "texture_binding.h"
++#include "sdk_compat.h"
++#include "../graphics/guest/pm4_capture.h"
++#include "../graphics/guest/vertex_layout.h"
++#include "../graphics/guest/primitive_expansion.h"
++#include <rex/runtime.h>
++#include <rex/system/kernel_state.h>
++#include <rex/system/xmemory.h>
++#include <rex/graphics/registers.h>
++#include <rex/graphics/xenos.h>
++#include <rex/hash.h>
++#include <rex/cvar.h>
++#include <rex/logging.h>
++#include <fmt/format.h>
++#include <algorithm>
++#include <chrono>
++#include <cstdlib>
++#include <cstring>
++#include <stdexcept>
++REXCVAR_DEFINE_INT32(sr_native_debug_spin_us, 0, "Superman Returns Native",
++                     "Debug: busy-wait this many microseconds in every native draw entry (timing bisection)");
++REXCVAR_DEFINE_INT32(sr_native_dump_after_pass, -1, "Superman Returns Native",
++                     "Debug: with sr_native_dump_frame_at_s, dump at the end of this pass instead of "
++                     "at the end of the frame");
++REXCVAR_DEFINE_BOOL(sr_native_ring_constants, true, "Superman Returns Native",
++                    "Debug: mirror GpuBeginShaderConstantF4 ring constants into the shadow");
++REXCVAR_DEFINE_BOOL(sr_native_pm4_mirror, true, "Superman Returns Native",
++                    "Take shader/fetch constants from the parsed command stream (GPU truth) "
++                    "instead of the XDK device shadow");
++REXCVAR_DEFINE_BOOL(sr_native_packet_check, false, "Superman Returns Native",
++                    "Development: decode captured neutral render packets alongside D3D12; "
++                    "reports capture errors and does not select Vulkan");
++REXCVAR_DEFINE_INT32(sr_native_packet_check_every, 120, "Superman Returns Native",
++                     "Development: capture one frame every N swaps (1 captures every frame)");
++REXCVAR_DEFINE_BOOL(sr_native_gamma_ramp, true, "Superman Returns Native",
++                    "Apply the guest display gamma ramp when presenting the front buffer");
++REXCVAR_DEFINE_BOOL(sr_native_texture_watch, true, "Superman Returns Native",
++                    "Revalidate textures only after guest writes (page write watches) instead "
++                    "of hashing them every frame");
++REXCVAR_DEFINE_BOOL(sr_native_worker, true, "Superman Returns Native",
++                    "Record D3D12 commands on a worker thread (guest threads only capture state; "
++                    "requires sr_native_pm4_mirror)");
++REXCVAR_DEFINE_BOOL(sr_native_worker_lag, true, "Superman Returns Native",
++                    "Let the recording worker finish a frame while the guest starts the next one");
++REXCVAR_DEFINE_STRING(sr_native_debug_vs, "", "Superman Returns Native",
++                      "Debug: log streams, vertex range and first/last vertices of draws using this "
++                      "vertex shader (hex container hash)");
++REXCVAR_DEFINE_INT32(sr_native_debug_vb_addr, 0, "Superman Returns Native",
++                     "Debug: log plans and first vertices of draws using this vertex buffer base");
++REXCVAR_DEFINE_BOOL(sr_native_debug_buffers_always_dirty, false, "Superman Returns Native",
++                    "Debug: re-upload every draw's vertex/index range (ignores Unlock tracking)");
++REXCVAR_DEFINE_BOOL(sr_native_draws, true, "Superman Returns Native", "Native renderer: issue draws (debug bisection)");
++REXCVAR_DEFINE_BOOL(sr_native_resolves, true, "Superman Returns Native", "Native renderer: perform resolves (debug bisection)");
++namespace superman_returns::native {
++using graphics::guest::CaptureRange;
++namespace xenos=rex::graphics::xenos;
++namespace reg=rex::graphics::reg;
++int g_current_pass=0,g_guest_pass=0;
++std::atomic<uint32_t> g_guest_device{0};
++void NoteGuestDevice(uint32_t dev) {if(dev) g_guest_device.store(dev,std::memory_order_relaxed);}
++bool GuestGammaRamp256(uint32_t*);
++namespace {
++bool CpuProfiling() {
++  static const bool enabled=[] {
++    for(const char* name:{"SR_NATIVE_CPU_PROFILE","SR_VULKAN_PROFILE","SR_NATIVE_TEXTURE_AUDIT"}) {
++      const char* value=std::getenv(name);if(value && *value && *value!='0')return true;
++    }
++    return false;
++  }();return enabled;
++}
++struct CpuTimings {
++  uint64_t capture_ns=0,wait_ns=0,execute_ns=0,prepare_ns=0,constants_ns=0,streams_ns=0,swaps=0;
++  uint64_t constant_float_ns=0,constant_slots_ns=0,texture_lookup_ns=0,texture_hash_ns=0,sampler_ns=0;
++  uint64_t texture_hash_bytes=0,texture_hash_checks=0,slot_hits=0,slot_misses=0,constant_draws=0;
++  uint64_t texture_watch_ns=0,texture_watch_rearms=0,texture_hash_changes=0;
++  uint64_t shared_hits=0,shared_uploads=0,shared_upload_ns=0;
++  std::chrono::steady_clock::time_point capture_start;
++};
++thread_local CpuTimings cpu_timings;
++CpuTimings front_cpu_timings; // Accessed only under Renderer::front_mutex_.
++bool TextureAuditing() {
++  static const bool enabled=[] {
++    const char* value=std::getenv("SR_NATIVE_TEXTURE_AUDIT");
++    return value && *value && *value!='0';
++  }();
++  return enabled;
++}
++bool SharedConstantsCaching() {
++  static const bool enabled=[] {
++    const char* value=std::getenv("SR_NATIVE_SHARED_CONSTANTS_CACHE");
++    return value && *value && *value!='0';
++  }();
++  return enabled;
++}
++thread_local TextureWriteAudit texture_write_audit;
++thread_local uint32_t texture_audit_details=0;
++void AuditTextureHash(const char* api,uint64_t frame,uint32_t address,uint64_t bytes,
++                      uint32_t format,bool changed,bool notified,bool watch_active) {
++  texture_write_audit.Record(bytes,changed,notified);
++  // Bound detailed logging for changing video planes. Aggregate counters below
++  // continue after this limit; lack of a notification never disables hashing.
++  if(changed && !notified && texture_audit_details<64) {
++    ++texture_audit_details;
++    REXLOG_INFO("native texture audit unnotified: api={} frame={} base={:08X} hash_bytes={} format={} watch_active={}",api,frame,address,bytes,format,watch_active);
++  }
++}
++void FlushTextureAudit(const char* api,uint64_t frame) {
++  if(!TextureAuditing() || !texture_write_audit.checks) return;
++  const auto& a=texture_write_audit;
++  REXLOG_INFO("native texture audit interval: api={} frame={} checks={} hash_kb={} changes={} unnotified_changes={} unnotified_kb={}",api,frame,a.checks,a.bytes/1024,a.changes,a.unnotified_changes,a.unnotified_bytes/1024);
++  texture_write_audit={};
++}
++struct CpuTimer {
++  uint64_t& total;
++  bool active=CpuProfiling();
++  std::chrono::steady_clock::time_point start=active?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
++  explicit CpuTimer(uint64_t& value):total(value) {}
++  void Stop() {if(active) {total+=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count());active=false;}}
++  ~CpuTimer() {Stop();}
++};
++
++struct CaptureTimings {
++  uint64_t reads=0,bytes=0,queries=0,pm4_us=0,textures_us=0;
++  uint64_t watch_us=0,read_us=0,hash_us=0,copy_us=0;
++  uint64_t new_entries=0,watch_dirty=0,revalidated=0,changed=0;
++};
++thread_local CaptureTimings capture_timings;
++struct OwnedReads {
++  std::deque<std::vector<uint8_t>> copies;
++  void Reset(){copies.clear();}
++};
++thread_local OwnedReads checked_guest_reads;
++const uint8_t* GuestSource(uint8_t*,uint32_t address,uint32_t length) {
++  std::string error;return ValidatedGuestPointer(*REX_KERNEL_MEMORY(),address,length,error);
++}
++std::span<const uint8_t> ReadCommittedGuest(uint8_t*,uint32_t address,uint32_t length) {
++  auto& bytes=checked_guest_reads.copies.emplace_back();std::string error;
++  if(!ReadGuestBytes(*REX_KERNEL_MEMORY(),address,length,bytes,error)) {
++    checked_guest_reads.copies.pop_back();return {};
++  }
++  return bytes;
++}
++using Xxh3Fn=uint64_t(*)(const void*,size_t,uint64_t);
++uint64_t Xxh3Baseline(const void* p,size_t n,uint64_t seed){return XXH3_64bits_withSeed(p,n,seed);}
++Xxh3Fn TextureHash(){return &Xxh3Baseline;}
++template<class Hash> bool HashGuestRange(const void* p,uint32_t n,uint64_t seed,Hash hash,uint64_t& out) {
++  if(!p || !n || n>0x20000000u) return false;out=hash(p,n,seed);return true;
++}
++constexpr const profile::DeviceLayout& kDev = profile::kDevice;
++constexpr uint32_t kDevFetchConstants = kDev.fetch_constants;  // [32] x 24 bytes
++constexpr uint32_t kDevVsConstants = kDev.vs_constants;        // 256 float4
++constexpr uint32_t kDevPsConstants = kDev.ps_constants;        // 256 float4
++constexpr uint32_t kDevVsBools = kDev.vs_bools;                // 4 dwords
++constexpr uint32_t kDevPsBools = kDev.ps_bools;                // 4 dwords
++constexpr uint32_t kDevVsLoops = kDev.vs_loops;                // 16 dwords
++constexpr uint32_t kDevPsLoops = kDev.ps_loops;                // 16 dwords
++constexpr uint32_t kDevShaderA = kDev.shader_a;
++constexpr uint32_t kDevShaderB = kDev.shader_b;
++constexpr uint32_t kDevVertexDecl = kDev.vertex_decl;
++constexpr uint32_t kDevViewport = kDev.viewport;  // X, Y, W, H, MinZ, MaxZ (f32)
++constexpr uint32_t kDevRenderTargets = kDev.render_targets;  // [4] surfaces
++constexpr uint32_t kDevDepthStencil = kDev.depth_stencil;
++// Vertex stream s uses the 8-byte vertex fetch constant at 0x778 - 8 * s
++// (the top of the fetch constant file).
++constexpr uint32_t kDevVertexFetch0 = kDev.fetch_constants + 0x2F8;
++// XDK D3DDevice_Clear flags: D3DCLEAR_TARGET0..3 = bits 0-3, ZBUFFER 0x10,
++// STENCIL 0x20 (the game passes 0xF = color only and 0x3F = everything).
++constexpr uint32_t kClearZBuffer = 0x10;
++constexpr uint32_t kClearStencil = 0x20;
++
++// Register shadow -> Xenos register (section 8).
++uint32_t RegShadowOffset(uint32_t reg_index) {
++  for (const profile::RegisterShadowRange& r : profile::kRegisterShadow) {
++    if (reg_index >= r.first && reg_index < r.first + r.count) {
++      return r.offset + 4 * (reg_index - r.first);
++    }
++  }
++  return 0;
++}
++
++// Guest addresses appear both as physical (device fetch slots) and as the
++// 0xA0000000-0xFFFFFFFF physical views (texture objects, surfaces). Normalize
++// to physical: low 29 bits, +4 KB for the 0xE0000000 view (XDK convention).
++inline uint32_t GuestPhysical(uint32_t address) {
++  return (address & 0x1FFFFFFFu) + (address >= 0xE0000000u ? 0x1000u : 0u);
++}
++
++// Guest memory captured with the worker command being executed (empty on the
++// guest threads and in direct mode): reads of captured ranges see the guest
++// state at capture time instead of the live memory.
++thread_local const CaptureRange* t_capture_ranges = nullptr;
++thread_local uint32_t t_capture_count = 0;
++thread_local const uint8_t* t_capture_bytes = nullptr;
++thread_local size_t t_capture_bytes_size = 0;
++
++inline const uint8_t* GuestPtr(uint8_t*,uint32_t addr,uint32_t len) {
++  std::string error;auto p=ValidatedGuestPointer(*REX_KERNEL_MEMORY(),addr,len,error);
++  if(!p) throw std::runtime_error(error);return p;
++}
++inline uint32_t Load32(uint8_t* base, uint32_t addr) {
++  uint32_t v;
++  std::memcpy(&v, GuestPtr(base, addr, 4), 4);
++  return __builtin_bswap32(v);
++}
++inline uint32_t Load16(uint8_t* base, uint32_t addr) {
++  uint16_t v;
++  std::memcpy(&v, GuestPtr(base, addr, 2), 2);
++  return __builtin_bswap16(v);
++}
++inline uint32_t Load8(uint8_t* base, uint32_t addr) { return *GuestPtr(base, addr, 1); }
++
++// Conan read the device from a global (0x82C81A64). SR's global is unknown:
++// with profile::kDevicePtrAddr == 0 the device is the r3 argument the D3D
++// hooks saw last (the XDK has one device per process; NoteGuestDevice).
++inline uint32_t GuestDevice(uint8_t* base) {
++  if constexpr (profile::kDevicePtrAddr != 0) {
++    return Load32(base, profile::kDevicePtrAddr);
++  } else {
++    return g_guest_device.load(std::memory_order_relaxed);
++  }
++}
++
++// Texture fetch constant with RGB sign = GAMMA (dword 0 bits 2-7).
++inline bool IsGammaFetch(const uint32_t fetch[6]) {
++  return ((fetch[0] >> 2) & 3) == 3 && ((fetch[0] >> 4) & 3) == 3 && ((fetch[0] >> 6) & 3) == 3;
++}
++inline float LoadF32(uint8_t* base, uint32_t addr) {
++  uint32_t v = Load32(base, addr);
++  float f;
++  std::memcpy(&f, &v, 4);
++  return f;
++}
++uint32_t LoadReg(uint8_t* base, uint32_t dev, uint32_t reg_index) {
++  uint32_t off = RegShadowOffset(reg_index);
++  return off ? Load32(base, dev + off) : 0;
++}
++
++const std::vector<graphics::guest::VertexAttribute>& ReadVertexDeclaration(uint8_t* base,uint32_t decl) {
++  static const std::vector<graphics::guest::VertexAttribute> empty;
++  if(!decl) return empty;
++  uint32_t count=std::min(Load32(base,decl+0x18),64u);
++  if(!count) return empty;
++  thread_local graphics::guest::VertexDeclarationCache cache;
++  auto bytes=t_capture_count?graphics::guest::FindUnambiguousCapture(
++      {t_capture_ranges,t_capture_count},{t_capture_bytes,t_capture_bytes_size},decl+0x34,count*12)
++      :ReadCommittedGuest(base,decl+0x34,count*12);
++  if(!bytes.empty()) return cache.Decode(bytes).attributes;
++  // Partial overlays must keep the scalar read precedence of the capture shim.
++  thread_local std::vector<graphics::guest::VertexAttribute> out;
++  out.clear();
++  for(uint32_t i=0;i<count;++i) {
++    uint32_t a=decl+0x34+i*12,stream=Load16(base,a);
++    if(stream==0xff) break;
++    out.push_back({stream,Load16(base,a+2),Load32(base,a+4),Load8(base,a+9),Load8(base,a+10)});
++  }
++  return out;
++}
++}
++std::pair<uint32_t, uint32_t> NativeFrontend::OnPhysicalWrite(void* context, uint32_t start,
++                                                        uint32_t length, bool exact_range) {
++  auto* self = static_cast<NativeFrontend*>(context);
++  uint32_t seq = self->write_seq_.fetch_add(1, std::memory_order_relaxed) + 1;
++  uint32_t first = start >> 12;
++  uint32_t last = std::min((uint64_t(start) + std::max(length, 1u) - 1) >> 12, uint64_t(0x1FFFF));
++  for (uint32_t p = first; p <= last; ++p) {
++    self->page_write_seq_[p].store(seq, std::memory_order_release);
++  }
++  // Only the written pages are unwatched (and marked above).
++  return {start, length};
++}
++
++uint32_t NativeFrontend::ArmTextureWatch(uint32_t base, uint32_t size) {
++  // Sequence taken before protecting: any later write is newer.
++  uint32_t seq = write_seq_.load(std::memory_order_acquire);
++  REX_KERNEL_MEMORY()->EnablePhysicalMemoryAccessCallbacks(base & 0x1FFFFFFF, size, true, false);
++  return seq;
++}
++
++bool NativeFrontend::TextureWrittenSince(uint32_t base, uint32_t size, uint32_t seq) const {
++  uint32_t first = (base & 0x1FFFFFFF) >> 12;
++  uint32_t last = std::min(((base & 0x1FFFFFFF) + size - 1) >> 12, 0x1FFFFu);
++  for (uint32_t p = first; p <= last; ++p) {
++    if (int32_t(page_write_seq_[p].load(std::memory_order_acquire) - seq) > 0) return true;
++  }
++  return false;
++}
++
++void NativeFrontend::NoteRingConstants(bool pixel, uint32_t start, uint32_t count, uint32_t ring_ptr) {
++  if (REXCVAR_GET(sr_native_pm4_mirror)) return;  // the mirror parses the packets itself
++  std::lock_guard<std::recursive_mutex> lock(mutex_);
++  if (trace_state_ == 1) {
++    REXLOG_INFO("trace p{} ring consts {} start {} count {} ptr {:08X}", g_current_pass,
++                pixel ? "ps" : "vs", start, count, ring_ptr);
++  }
++  if (ring_ptr && count && start + count <= 256) {
++    pending_ring_constants_.push_back({pixel, start, count, ring_ptr});
++  }
++}
++
++void NativeFrontend::ApplyLoadAluConstants(uint8_t* base, uint32_t dev, uint32_t table,
++                                     uint32_t data) {
++  if (REXCVAR_GET(sr_native_pm4_mirror)) return;  // the mirror parses the packet itself
++  std::lock_guard<std::recursive_mutex> lock(mutex_);
++  // Earlier ring writes precede this load on the GPU.
++  FlushRingConstants(base, dev);
++  uint32_t rel = Load32(base, table + 20);
++  if (!rel || !data) return;
++  uint32_t header = table + rel;
++  uint32_t p = header + 20;
++  uint32_t end = p + Load32(base, header + 16);
++  while (p < end) {
++    uint32_t reg = Load16(base, p);
++    uint32_t dwords = Load16(base, p + 2);
++    if (!dwords) break;
++    uint32_t offset = Load32(base, p + 4);
++    p += 8;
++    // VS constants 0-255 and PS constants 256-511 are contiguous in the shadow.
++    if (reg * 4 + dwords <= 512 * 4) {
++      // The packet carries the physical address (0xE0000000+ views are offset by 4 KB).
++      const uint8_t* src =
++          GuestPtr(base,data+offset,dwords*4);
++      std::memcpy(base + dev + kDevVsConstants + reg * 16, src, dwords * 4);
++    }
++  }
++}
++
++void NativeFrontend::FlushRingConstants(uint8_t* base, uint32_t dev) {
++  if (!REXCVAR_GET(sr_native_ring_constants) || REXCVAR_GET(sr_native_pm4_mirror)) {
++    pending_ring_constants_.clear();
++    return;
++  }
++  // Keep the device's cached constants equal to what the GPU would receive
++  // (the XDK contract for GpuBeginShaderConstantF4's cached pointer).
++  for (const RingConstants& rc : pending_ring_constants_) {
++    uint32_t dst = dev + (rc.pixel ? kDevPsConstants : kDevVsConstants) + rc.start * 16;
++    std::memcpy(base + dst, base + rc.ring_ptr, size_t(rc.count) * 16);
++  }
++  pending_ring_constants_.clear();
++}
++
++bool NativeFrontend::RefreshTrackedBuffer(TrackedBuffer& t) {
++  bool page_written = false;
++  if (texture_watch_ && t.watched) {
++    const uint32_t global = write_seq_.load(std::memory_order_acquire);
++    if (global != t.checked_seq) {
++      t.checked_seq = global;
++      if (TextureWrittenSince(t.address, t.size, t.watch_seq)) {
++        // Arm before reading so a later physical write remains observable.
++        t.watch_seq = ArmTextureWatch(t.address, t.size);
++        page_written = true;
++      }
++    }
++  }
++  bool changed = page_written;
++  if (t.size <= kHashedBufferMax) {
++    // Confirm page-level notifications against the actual allocation. Keep
++    // the once-per-frame fallback for writes through unobserved virtual aliases.
++    changed = t.content.Refresh(front_frame_, page_written, [&] {
++      return TextureHash()(
++          GuestPtr(nullptr,0xA0000000u+(t.address&0x1FFFFFFF),t.size), t.size, 0);
++    });
++    if (changed) ++stats_.buffer_hash_dirty;
++  }
++  if (changed) {
++    t.dirty = true;
++    t.clean.clear();
++    if (page_written) ++stats_.buffer_watch_dirty;
++  }
++  return t.dirty;
++}
++
++NativeFrontend::BufferPlan NativeFrontend::PlanBuffer(uint8_t* base, uint32_t address, uint32_t size,
++                                          uint32_t decl, uint32_t stride, uint32_t index_format,
++                                          uint32_t phase, uint32_t need_begin, uint32_t need_end,
++                                          bool& ok, uint32_t reset_index) {
++  BufferPlan plan;
++  ok = size && size <= (64u << 20);
++  if (!ok) return plan;
++  uint64_t key_parts[] = {address, size, decl, stride, index_format, phase, reset_index};
++  plan.key = XXH3_64bits(key_parts, sizeof(key_parts));
++  plan.address = address;
++  plan.size = size;
++  plan.decl = decl;
++  plan.stride = stride;
++  plan.format = index_format;
++  plan.phase = phase;
++  plan.reset_index = reset_index;
++  // Vertex data is swapped per vertex: the swap range must start on a vertex.
++  auto align_range = [&](uint32_t& b, uint32_t& e) {
++    e = std::min(e, size);
++    if ((index_format & 3) == 1 && (index_format >> 2) < 2) {
++      b &= ~1u;
++      e = (e + 1) & ~1u;
++    } else if (index_format & 3) {
++      b &= ~3u;
++      e = (e + 3) & ~3u;
++    } else if (stride) {
++      b = b < phase ? phase : b - ((b - phase) % stride);
++      uint32_t n = (e > b ? e - b + stride - 1 : 0) / stride;
++      e = std::min(b + n * stride, size - ((size - phase) % stride));
++    }
++    e = std::min(e, size);
++  };
++  auto it = tracked_.find(plan.key);
++  if (it != tracked_.end()) {
++    TrackedBuffer& t = it->second;
++    if (REXCVAR_GET(sr_native_debug_buffers_always_dirty)) {
++      t.dirty = true;
++      t.clean.clear();
++    }
++    RefreshTrackedBuffer(t);
++    if (!t.dirty) return plan;
++    uint32_t b = need_begin, e = need_end;
++    align_range(b, e);
++    if (e <= b) return plan;
++    for (const auto& [cb, ce] : t.clean) {
++      if (cb <= b && e <= ce) return plan;
++    }
++    plan.action = 1;
++    plan.begin = b;
++    plan.end = e;
++    CaptureBytes(base, 0xA0000000u + address + b, e - b);
++    t.clean.emplace_back(b, e);
++    if (t.clean.size() > 64) {
++      // Too fragmented: start over (later draws upload their ranges again).
++      t.clean.clear();
++      t.dirty = true;
++    }
++    return plan;
++  }
++  TrackedBuffer& t = tracked_[plan.key];
++  t.address = address;
++  t.size = size;
++  if (texture_watch_) {
++    t.watch_seq = ArmTextureWatch(address, size);
++    t.checked_seq = write_seq_.load(std::memory_order_acquire);
++    t.watched = true;
++  }
++  if (size <= kHashedBufferMax) {
++    t.content.Refresh(front_frame_, false, [&] {
++      return TextureHash()(
++          GuestPtr(nullptr,0xA0000000u+(address&0x1FFFFFFF),size), size, 0);
++    });
++  }
++  for (uint32_t page = (address & 0x1FFFFFFF) >> 16;
++       page <= ((address & 0x1FFFFFFF) + size - 1) >> 16; ++page) {
++    buffer_pages_[page].push_back(&t);
++  }
++  plan.action = 2;
++  plan.begin = 0;
++  plan.end = size;
++  CaptureBytes(base, 0xA0000000u + address, size);
++  return plan;
++}
++
++void NativeFrontend::InvalidateGuestRange(uint32_t address, uint32_t size) {
++  std::lock_guard<std::mutex> lock(front_mutex_);
++  if (!size) {
++    return;
++  }
++  // Physical addresses of buffers are compared on the low 29 bits.
++  uint32_t a = address & 0x1FFFFFFF;
++  uint64_t stamp = ++invalidation_stamp_;
++  for (uint32_t page = a >> 16; page <= (a + size - 1) >> 16; ++page) {
++    auto pit = buffer_pages_.find(page);
++    if (pit == buffer_pages_.end()) continue;
++    for (TrackedBuffer* tp : pit->second) {
++      TrackedBuffer& t = *tp;
++      if (t.invalidation_stamp == stamp) continue;  // seen on an earlier page
++      t.invalidation_stamp = stamp;
++      uint32_t b = t.address & 0x1FFFFFFF;
++      if (t.dirty && t.clean.empty()) continue;  // already fully dirty
++      if (b < a + size && a < b + t.size) {
++        front_invalidations_.fetch_add(1, std::memory_order_relaxed);
++        front_invalidated_bytes_.fetch_add(t.size, std::memory_order_relaxed);
++        t.dirty = true;
++        t.clean.clear();
++      }
++    }
++  }
++}
++
++bool NativeFrontend::DynamicVertexFetch(uint8_t* base, uint32_t dev) {
++  for (uint32_t off : {kDevShaderA, kDevShaderB}) {
++    const GuestShaderInfo* info = LookupGuestShader(Load32(base, dev + off));
++    if (info && info->is_vertex && info->dynamic_vertex_fetch) return true;
++  }
++  return false;
++}
++
++bool NativeFrontend::PlanStreams(uint8_t* base, uint32_t dev, uint32_t decl, VertexRange* range) {
++  if (!decl) return false;
++  if (DynamicVertexFetch(base, dev)) range = nullptr;
++  uint32_t streams_used = 0;
++  for (const auto& attribute : ReadVertexDeclaration(base,decl))
++    if(attribute.stream<16) streams_used|=1u<<attribute.stream;
++  for (uint32_t s = 0; s < 16; ++s) {
++    if (!(streams_used & (1u << s))) continue;
++    // Vertex fetch constant for stream s (XDK: slot 95 - s).
++    uint32_t fetch0 = Load32(base, dev + kDevVertexFetch0 - 8 * s);
++    uint32_t fetch1 = Load32(base, dev + kDevVertexFetch0 - 8 * s + 4);
++    uint32_t address = fetch0 & ~3u;
++    uint32_t size = ((fetch1 >> 2) & 0xFFFFFF) * 4;
++    uint32_t stride = Load8(base, dev + kDev.stream_strides + s) * 4;
++    if (!address || !size || !stride) {
++      return false;
++    }
++    // Cache the whole guest vertex buffer (the stream offset of SetStreamSource
++    // varies per draw into large shared buffers) and bind at an offset.
++    uint32_t buffer_base = address, buffer_size = size;
++    if (uint32_t vb_object = Load32(base, dev + kDev.stream_buffers + 4 * s)) {
++      uint32_t v = Load32(base, vb_object + 0x18) & ~3u;
++      uint32_t phys = (v & 0x1FFFFFFFu) + (v >= 0xE0000000u ? 0x1000u : 0u);
++      uint32_t full = ((Load32(base, vb_object + 0x1C) >> 2) & 0xFFFFFF) * 4;
++      if (phys <= address && address + size <= phys + full) {
++        buffer_base = phys;
++        buffer_size = full;
++      }
++    }
++    uint32_t offset = address - buffer_base;
++    uint32_t phase = offset % stride;
++    StreamPlan sp;
++    sp.stream = s;
++    sp.offset = offset;
++    sp.size = size;
++    sp.stride = stride;
++    FrontStreamCache& sc = front_stream_cache_[s];
++    if (!REXCVAR_GET(sr_native_debug_buffers_always_dirty) && sc.tracked && sc.address == buffer_base && sc.size == buffer_size && sc.decl == decl &&
++        sc.stride == stride && sc.phase == phase && !RefreshTrackedBuffer(*sc.tracked)) {
++      // Clean and cached: no lookup, no range needed.
++      sp.buffer.key = sc.key;
++      sp.buffer.address = buffer_base;
++      sp.buffer.size = buffer_size;
++      sp.buffer.decl = decl;
++      sp.buffer.stride = stride;
++      sp.buffer.format = s << 8;
++      sp.buffer.phase = phase;
++    } else {
++      uint32_t need_begin = 0, need_end = ~0u;
++      if (range) {
++        range->Resolve();
++        if (range->end != ~0u) {
++          uint64_t b = uint64_t(offset) + uint64_t(range->first) * stride;
++          uint64_t e = uint64_t(offset) + uint64_t(range->end) * stride;
++          need_begin = uint32_t(std::min<uint64_t>(b, buffer_size));
++          need_end = uint32_t(std::min<uint64_t>(e, buffer_size));
++        }
++      }
++      bool ok = false;
++      sp.buffer = PlanBuffer(base, buffer_base, buffer_size, decl, stride, s << 8, phase,
++                             need_begin, need_end, ok);
++      if (!ok) return false;
++      auto it = tracked_.find(sp.buffer.key);
++      sc.address = buffer_base;
++      sc.size = buffer_size;
++      sc.decl = decl;
++      sc.stride = stride;
++      sc.format = s << 8;
++      sc.phase = phase;
++      sc.key = sp.buffer.key;
++      sc.tracked = it != tracked_.end() ? &it->second : nullptr;
++    }
++    if (REXCVAR_GET(sr_native_debug_vb_addr) && address == uint32_t(REXCVAR_GET(sr_native_debug_vb_addr))) {
++      static int logged = 0;
++      if (logged++ < 40) {
++        std::string v;
++        for (uint32_t k = 0; k < 12 && k * 4 < buffer_size; ++k)
++          v += fmt::format(" {:.4f}", LoadF32(base, 0xA0000000u + buffer_base + offset + 4 * k));
++        REXLOG_INFO("native dbg vb {:08X}+{} size {} stride {} plan action {} dirty {}:{}",
++                    buffer_base, offset, buffer_size, stride, int(sp.buffer.action),
++                    sc.tracked ? sc.tracked->dirty : -1, v);
++      }
++    }
++    batch_->streams.push_back(sp);
++    if (!REXCVAR_GET(sr_native_debug_vs).empty()) {
++      uint64_t want = std::strtoull(REXCVAR_GET(sr_native_debug_vs).c_str(), nullptr, 16);
++      const GuestShaderInfo* a = LookupGuestShader(Load32(base, dev + kDevShaderA));
++      const GuestShaderInfo* b = LookupGuestShader(Load32(base, dev + kDevShaderB));
++      bool match = (a && a->is_vertex && a->container_hash == want) ||
++                   (b && b->is_vertex && b->container_hash == want);
++      static int logged = 0;
++      if (match && logged < 90) {
++        ++logged;
++        uint32_t first = 0, last = 0;
++        if (range && range->end != ~0u) {
++          range->Resolve();
++          first = range->first;
++          last = range->end;
++        }
++        auto vtx = [&](uint32_t index) {
++          std::string v;
++          uint32_t at = 0xA0000000u + address + index * stride;
++          for (uint32_t k = 0; k < stride / 4 && k < 6; ++k) v += fmt::format(" {:.3f}", LoadF32(base, at + 4 * k));
++          return v;
++        };
++        REXLOG_INFO("native dbg vs s{} addr {:08X} size {} stride {} buf {:08X}+{}/{} range [{},{}) "
++                    "action {} | v[first]{} | v[last-1]{}",
++                    s, address, size, stride, buffer_base, offset, buffer_size, first, last,
++                    int(sp.buffer.action), (size >= stride) ? vtx(first) : "", (last > first && (last - 1) * stride < size) ? vtx(last - 1) : "");
++      }
++    }
++  }
++  return true;
++}
++
++void NativeFrontend::BeginCmd(Op op) {
++  if(CpuProfiling()) front_cpu_timings.capture_start=std::chrono::steady_clock::now();
++  if (!worker_mode_checked_ && !worker_stop_) {
++    // This frontend is shared by D3D12 and the Vulkan packet sink. Initialize
++    // before capturing buffers/textures, not in the D3D12-only BeginFrame.
++    // BeginCmd callers hold front_mutex_, and the worker starts only below.
++    if (REXCVAR_GET(sr_native_texture_watch)) {
++      page_write_seq_ = std::make_unique<std::atomic<uint32_t>[]>(0x20000);
++      for (uint32_t p = 0; p < 0x20000; ++p) page_write_seq_[p].store(0);
++      watch_memory_ = REX_KERNEL_MEMORY();
++      watch_handle_ = watch_memory_->RegisterPhysicalMemoryInvalidationCallback(
++          &NativeFrontend::OnPhysicalWrite, this);
++      texture_watch_ = watch_handle_ != nullptr;
++      REXLOG_INFO("native: guest physical memory write watch {} (api={})",
++          texture_watch_ ? "enabled" : "unavailable", packet_sink_ ? "vulkan" : "d3d12");
++    }
++    worker_mode_checked_ = true;
++    worker_mode_ = bool(packet_sink_) || (REXCVAR_GET(sr_native_worker) && REXCVAR_GET(sr_native_pm4_mirror));
++    if (worker_mode_) {
++      if(!worker_.joinable()) worker_=std::thread(&NativeFrontend::WorkerMain, this);
++      REXLOG_INFO("native: recording worker enabled");
++    }
++  }
++  if (!batch_) batch_ = std::make_unique<WorkBatch>();
++  cur_ = WorkCmd{};
++  cur_.op = op;
++  cur_.command_serial = ++capture_serial_;
++  cur_.tiling_active = capture_tiling_active_;
++  cur_.packet_check = (!worker_stop_ && bool(packet_sink_)) || (REXCVAR_GET(sr_native_packet_check) && graphics::guest::IsCaptureFrame(
++      front_frame_, uint32_t(std::max(1,REXCVAR_GET(sr_native_packet_check_every)))));
++  cur_.pass = g_guest_pass;
++  cur_.range_first = uint32_t(batch_->ranges.size());
++  cur_.stream_first = uint32_t(batch_->streams.size());
++}
++
++void NativeFrontend::EndCmd(uint8_t* base) {
++  if(worker_stop_) return;
++  checked_guest_reads.Reset();
++  const auto capture_copies_before=capture_mirror_.copy_draws;
++  if (cur_.packet_check && cur_.ring_bytes) {
++    const auto started=std::chrono::steady_clock::now();
++    std::string capture_error;
++    cur_.pm4_capture_ok = graphics::guest::CapturePm4Dependencies(*batch_, cur_,
++        [base](uint32_t address, uint32_t length) {
++          return ReadCommittedGuest(base,address,length);
++        }, capture_error, &capture_mirror_);
++    capture_timings.pm4_us+=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count();
++    if (!cur_.pm4_capture_ok)
++      REXLOG_WARN("native PM4 capture: {}", capture_error);
++  }
++  if (REXCVAR_GET(sr_native_packet_check) && !cur_.packet_check && cur_.ring_bytes) {
++    // Keep the same frontend parser current between sampled frames. Only a
++    // selected diagnostic frame freezes referenced bytes for packet decoding.
++    capture_mirror_.ScanCopyUsing(batch_->bytes.data()+cur_.ring_offset,cur_.ring_bytes,
++        [base](uint32_t address,uint32_t length) {return ReadCommittedGuest(base,address,length);});
++  }
++  if (cur_.packet_check && cur_.device &&
++      (cur_.op==Op::kDraw || cur_.op==Op::kDrawIndexed || cur_.op==Op::kDrawInline)) {
++    const auto started=std::chrono::steady_clock::now();
++    CaptureTextures(base);
++    capture_timings.textures_us+=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count();
++  }
++  if(cur_.op==Op::kResolve && cur_.packet_check) {
++    cur_.resolve_copy_draw=capture_mirror_.copy_draws!=capture_copies_before;
++    cur_.resolve_copy_dest_info=capture_mirror_.last_copy_dest_info;
++  }
++  cur_.range_count = uint32_t(batch_->ranges.size()) - cur_.range_first;
++  cur_.stream_count = uint32_t(batch_->streams.size()) - cur_.stream_first;
++  if(cur_.op==Op::kBeginTiling) capture_tiling_active_=true;
++  if(cur_.op==Op::kEndTiling) capture_tiling_active_=false;
++  // The completed command belongs to the batch. Avoid copying its texture and
++  // shader references (and diagnostic strings) for every draw on both APIs.
++  batch_->cmds.push_back(std::move(cur_));
++  if(CpuProfiling()) front_cpu_timings.capture_ns+=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-front_cpu_timings.capture_start).count());
++  if (!worker_mode_) {
++    std::lock_guard<std::recursive_mutex> lock(mutex_);
++    Execute(base, *batch_, batch_->cmds.back());
++    batch_->Clear();
++    return;
++  }
++  if (batch_->cmds.size() >= 32 || batch_->bytes.size() >= (4u << 20)) {
++    FlushBatch();
++  }
++}
++
++void NativeFrontend::CaptureTextures(uint8_t* base) {
++  for (uint32_t slot=0;slot<32;++slot) {
++    std::array<uint32_t,6> fetch{};
++    for(uint32_t i=0;i<6;++i) {
++      uint32_t reg=Pm4Mirror::kFetchConstantBase+slot*6+i;
++      fetch[i]=capture_mirror_.written(reg) ? capture_mirror_.reg(reg)
++          : Load32(base,cur_.device+kDev.fetch_constants+slot*24+i*4);
++    }
++    if(!IsTextureBound(fetch[0])) continue;
++    auto& entry=captured_textures_[fetch];
++    if(!entry.snapshot && entry.failed_frame!=~0ull && front_frame_<entry.failed_frame+16) {cur_.texture_errors.emplace_back(slot,entry.failure);continue;}
++    bool dirty=!entry.snapshot;
++    bool notified=false;
++    if(dirty) ++capture_timings.new_entries;
++    if(entry.snapshot) {
++      for(const auto& range:entry.snapshot->ranges)
++        if(texture_watch_ && TextureWrittenSince(range.address,range.length,entry.watch_seq)) dirty=notified=true;
++      if(dirty) ++capture_timings.watch_dirty;
++      if(entry.checked_frame!=front_frame_) {
++        uint64_t total=0;
++        for(const auto& range:entry.snapshot->ranges) total+=range.length;
++        // Verify dynamic movie and UI textures (up to 4MB). Guest virtual writes
++        // (e.g. video decoder YUV planes) bypass physical memory write watches.
++        // Re-reading every texture every frame cost ~180 MB/57 ms per frame, so
++        // with the watch active, textures found unchanged are checked with an
++        // exponential backoff (2..16 frames); changing ones stay per frame.
++        if(!texture_watch_) dirty=true;
++        else if(total<=4096u*1024 && front_frame_>=entry.next_check_frame) {if(!dirty) ++capture_timings.revalidated;dirty=true;}
++      }
++    }
++    entry.checked_frame=front_frame_;
++    if(dirty) {
++      std::string error;
++      std::vector<graphics::guest::TextureRange> ranges;
++      if(!graphics::guest::DescribeTextureRanges(fetch,ranges,error)) {
++        entry.failed_frame=front_frame_;entry.failure=error;
++        cur_.texture_errors.emplace_back(slot,std::move(error));
++        continue;
++      }
++      uint64_t hash=0xcbf29ce484222325ull;
++      entry.watch_seq=write_seq_.load(std::memory_order_acquire);
++      for(const auto& range:ranges) {
++        auto started=std::chrono::steady_clock::now();
++        if(texture_watch_) ArmTextureWatch(range.address,range.length);
++        capture_timings.watch_us+=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count();
++        // Hash the guest bytes where they are. Copying ~100 MB per frame only to learn that nothing
++        // changed cost ~30 ms of the guest thread; the copy now happens only for a changed texture.
++        ++capture_timings.reads;capture_timings.bytes+=range.length;
++        started=std::chrono::steady_clock::now();
++        const bool hashed=HashGuestRange(GuestSource(base,0xa0000000u+range.address,range.length),range.length,hash,
++            TextureHash(),hash);
++        capture_timings.hash_us+=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count();
++        if(!hashed) {error="Texture memory is not readable";break;}
++      }
++      if(!error.empty()) {entry.failed_frame=front_frame_;entry.failure=error;cur_.texture_errors.emplace_back(slot,std::move(error));continue;}
++      const bool unchanged=entry.snapshot && hash==entry.content_hash;
++      if(TextureAuditing() && entry.snapshot) {
++        uint64_t bytes=0;
++        for(const auto& range:ranges) {
++          bytes+=range.length;
++          if(texture_watch_ && TextureWrittenSince(range.address,range.length,entry.watch_seq)) notified=true;
++        }
++        AuditTextureHash(packet_sink_?"vulkan":"d3d12_capture",front_frame_,
++            fetch[1]&0x1ffff000u,bytes,fetch[1]&0x3fu,!unchanged,notified,texture_watch_);
++      }
++      entry.stable_checks=unchanged?std::min(entry.stable_checks+1,4u):0;
++      entry.next_check_frame=front_frame_+(uint64_t(1)<<entry.stable_checks);
++      if(!unchanged) ++capture_timings.changed;
++      if(!unchanged) {
++        const auto started=std::chrono::steady_clock::now();
++        if(!graphics::guest::CaptureTexture(fetch,cur_.command_serial,
++            [base](uint32_t address,uint32_t length){
++              return ReadCommittedGuest(base,address,length);
++            },entry.snapshot,error)) {
++          entry.failed_frame=front_frame_;entry.failure=error;
++          cur_.texture_errors.emplace_back(slot,std::move(error));
++          continue;
++        }
++        // Hash exactly the owned bytes, rather than a preceding live read.
++        // A loader may write between the change check and the snapshot copy.
++        hash=0xcbf29ce484222325ull;
++        for(const auto& range:entry.snapshot->ranges) {
++          auto bytes=entry.snapshot->memory.Read(0xa0000000u+range.address,range.length);
++          hash=TextureHash()(bytes.data(),bytes.size(),hash);
++        }
++        entry.content_hash=hash;
++        capture_timings.copy_us+=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-started).count();
++      }
++    }
++    cur_.textures[slot]=entry.snapshot;
++  }
++  // Commands retain ownership even when the frontend cache is pruned.
++  if(captured_textures_.size()>2048) {
++    for(auto it=captured_textures_.begin();it!=captured_textures_.end();) {
++      if(it->second.checked_frame+120<front_frame_) it=captured_textures_.erase(it);
++      else ++it;
++    }
++  }
++}
++
++void NativeFrontend::CaptureDevice(uint8_t* base, uint32_t dev) {
++  cur_.device = dev;
++  if (cur_.packet_check) {
++    CaptureBytes(base, dev + kDev.fetch_constants, 32 * 24);
++    CaptureBytes(base, dev + kDev.vs_bools, kDev.register_shadow-kDev.vs_bools);
++    for (const auto& range : profile::kRegisterShadow)
++      CaptureBytes(base, dev + range.offset, range.count * 4);
++    uint32_t vs = Load32(base, dev + kDev.shader_a), ps = Load32(base, dev + kDev.shader_b);
++    TryRegisterInlineShaders(base, vs, ps);
++    cur_.vertex_shader = CaptureGuestShader(vs);
++    cur_.pixel_shader = CaptureGuestShader(ps);
++  }
++  if (profile::kDevicePtrAddr) CaptureBytes(base, profile::kDevicePtrAddr, 4);
++  CaptureBytes(base, dev, 8);
++  CaptureBytes(base, dev + kDev.fetch_constants + 0x280, 0x80);  // vertex fetch slots
++  CaptureBytes(base, dev + kDev.register_shadow, 0x1D0);
++  CaptureBytes(base, dev + kDev.vertex_decl - 4, 8);
++  CaptureBytes(base, dev + kDev.index_buffer - 0xC, 0x120);  // pointers .. viewport
++  for (uint32_t i = 0; i < 4; ++i) {
++    if (uint32_t rt = Load32(base, dev + kDevRenderTargets + 4 * i)) CaptureBytes(base, rt, 0x28);
++  }
++  if (uint32_t ds = Load32(base, dev + kDevDepthStencil)) CaptureBytes(base, ds, 0x28);
++  if (uint32_t decl = Load32(base, dev + kDevVertexDecl)) {
++    uint32_t n = std::min(Load32(base, decl + 0x18), 64u);
++    CaptureBytes(base, decl, 0x34 + 12 * n);
++  }
++}
++
++void NativeFrontend::CaptureRing(uint8_t* base, uint32_t dev) {
++  if (!dev) return;
++  // dev+48: last dword written into the current XDK command segment.
++  uint32_t current = Load32(base, dev + kDev.ring_write) + 4;
++  if (ring_last_ && current >= ring_last_ && current - ring_last_ <= (1u << 20)) {
++    uint32_t n = current - ring_last_;
++    if (!cur_.ring_bytes) cur_.ring_offset = uint32_t(batch_->bytes.size());
++    if (cur_.ring_offset + cur_.ring_bytes == batch_->bytes.size()) {
++      batch_->bytes.resize(batch_->bytes.size() + n);
++      std::memcpy(batch_->bytes.data() + cur_.ring_offset + cur_.ring_bytes, base + ring_last_, n);
++      cur_.ring_bytes += n;
++    }
++  } else if (ring_last_) {
++    ++ring_resyncs_;
++  }
++  ring_last_ = current;
++}
++
++void NativeFrontend::WaitWorkerIdle(uint64_t batches) {
++  std::unique_lock<std::mutex> lock(queue_mutex_);
++  done_cv_.wait(lock, [this, batches] { return worker_stop_ || batches_done_ >= batches; });
++}
++
++void NativeFrontend::DrawVertices(uint8_t* base, uint32_t prim, uint32_t start_vertex,
++                            uint32_t vertex_count) {
++  if (!REXCVAR_GET(sr_native_draws)) return;
++  std::lock_guard<std::mutex> lock(front_mutex_);
++  guest_base_ = base;
++  uint32_t dev = GuestDevice(base);
++  if (!dev) return;
++  if (prim == uint32_t(xenos::PrimitiveType::kRectangleList)) {
++    // Rect lists need CPU expansion: read stream 0 through the guest's
++    // physical view (0xA0000000 maps physical memory 1:1) and draw inline.
++    uint32_t fetch0 = Load32(base, dev + kDevVertexFetch0);
++    uint32_t stride = Load8(base, dev + kDev.stream_strides) * 4;
++    uint32_t phys = fetch0 & ~3u;
++    if (!phys || !stride) return;
++    uint32_t data = 0xA0000000u + phys + start_vertex * stride;
++    BeginCmd(Op::kDrawInline);
++    CaptureRing(base, dev);
++    CaptureDevice(base, dev);
++    CaptureBytes(base, data, vertex_count * stride);
++    cur_.u[0] = prim;
++    cur_.u[1] = data;
++    cur_.u[2] = vertex_count;
++    cur_.u[3] = stride;
++    EndCmd(base);
++    return;
++  }
++  BeginCmd(Op::kDraw);
++  CaptureRing(base, dev);
++  CaptureDevice(base, dev);
++  cur_.u[0] = prim;
++  cur_.u[1] = start_vertex;
++  cur_.u[2] = vertex_count;
++  VertexRange draw_range;
++  draw_range.first = start_vertex;
++  draw_range.end = start_vertex + vertex_count;
++  cur_.streams_ok = PlanStreams(base, dev, Load32(base, dev + kDevVertexDecl), &draw_range);
++  EndCmd(base);
++}
++
++void NativeFrontend::DrawIndexedVertices(uint8_t* base, uint32_t prim, int32_t base_vertex,
++                                   uint32_t start_index, uint32_t index_count) {
++  if (int32_t spin = REXCVAR_GET(sr_native_debug_spin_us)) {
++    auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(spin);
++    while (std::chrono::steady_clock::now() < until) {
++    }
++  }
++  if (!REXCVAR_GET(sr_native_draws)) return;
++  compat::RegisterSampledThread(3, "native_draw_thread");
++  std::lock_guard<std::mutex> lock(front_mutex_);
++  guest_base_ = base;
++  uint32_t dev = GuestDevice(base);
++  if (!dev) return;
++  BeginCmd(Op::kDrawIndexed);
++  CaptureRing(base, dev);
++  CaptureDevice(base, dev);
++  cur_.u[0] = prim;
++  cur_.u[1] = uint32_t(base_vertex);
++  cur_.u[2] = start_index;
++  cur_.u[3] = index_count;
++  // Vertex range referenced by the indices, scanned only if a dynamic vertex
++  // buffer of this draw is dirty.
++  VertexRange draw_range;
++  if (uint32_t ib_object = Load32(base, dev + kDev.index_buffer)) {
++    uint32_t header = Load32(base, ib_object);
++    bool index32 = (header & 0x80000000u) != 0;
++    uint32_t endian = (header >> 29) & 3;
++    static bool logged_endian[2][4] = {};
++    if (!logged_endian[index32][endian]) {
++      logged_endian[index32][endian] = true;
++      REXLOG_INFO("native: index DMA {}-bit endian {} (header {:08X})",
++                  index32 ? 32 : 16, endian, header);
++    }
++    // +0x18 is a guest *virtual* address: convert like the XDK draw prologue
++    // (82580FF8): physical = low 29 bits, +4 KB for the 0xE0000000 view.
++    uint32_t v = Load32(base, ib_object + 0x18);
++    uint32_t address = (v & 0x1FFFFFFFu) + (v >= 0xE0000000u ? 0x1000u : 0u);
++    uint32_t size = Load32(base, ib_object + 0x1C) & 0x00FFFFFFu;
++    if (endian >= 2) size = (size + 3) & ~3u;
++    draw_range.resolved = false;
++    draw_range.ib_phys = address;
++    draw_range.ib_size = size;
++    draw_range.start_index = start_index;
++    draw_range.index_count = index_count;
++    draw_range.base_vertex = base_vertex;
++    draw_range.index32 = index32;
++    draw_range.index_endian = endian;
++    const bool strip = prim == uint32_t(xenos::PrimitiveType::kTriangleStrip) ||
++                       prim == uint32_t(xenos::PrimitiveType::kLineStrip);
++    uint32_t reset_index = UINT32_MAX;
++    if (strip && (LoadReg(base, dev, rex::graphics::XE_GPU_REG_PA_SU_SC_MODE_CNTL) & (1u << 21))) {
++      const uint32_t reset = LoadReg(base, dev, rex::graphics::XE_GPU_REG_VGT_MULTI_PRIM_IB_RESET_INDX) & 0xFFFFFFu;
++      if (index32 || reset <= UINT16_MAX) reset_index = reset;
++    }
++    draw_range.reset_index = reset_index;
++    uint32_t isize = index32 ? 4 : 2;
++    bool ok = false;
++    cur_.index = PlanBuffer(base, address, size, 0, 0, (index32 ? 2u : 1u) | (endian << 2), 0, start_index * isize,
++                            (start_index + index_count) * isize, ok, reset_index);
++    cur_.has_index = ok;
++    cur_.index32 = index32;
++    cur_.index_size = size;
++    if (prim == uint32_t(xenos::PrimitiveType::kQuadList) && ok &&
++        (uint64_t(start_index) + index_count) * isize <= size) {
++      // Quads have no host topology: every group of 4 indices (a b c d) becomes
++      // the triangles (a b c) (a c d), like the non-indexed expansion. The
++      // expanded list is captured with the command; base_vertex stays a draw
++      // argument.
++      const uint8_t* idx = GuestPtr(base,0xA0000000u+address,size);
++      std::vector<uint32_t> tris;
++      std::string error;
++      if (!graphics::guest::NormalizeIndices({idx,size},start_index,index_count,
++            {index32,endian,UINT32_MAX},graphics::guest::Primitive::kQuads,tris,error)) {
++        cur_.has_index = false;
++        REXLOG_WARN("native: quad normalization failed: {}",error);
++      }
++      cur_.u[4] = uint32_t(batch_->bytes.size());
++      cur_.u[5] = uint32_t(tris.size());
++      batch_->bytes.insert(batch_->bytes.end(), reinterpret_cast<const uint8_t*>(tris.data()),
++                           reinterpret_cast<const uint8_t*>(tris.data()) + tris.size() * 4);
++    }
++  }
++  cur_.streams_ok = PlanStreams(base, dev, Load32(base, dev + kDevVertexDecl), &draw_range);
++  EndCmd(base);
++}
++
++void NativeFrontend::DrawInlineVertices(uint8_t* base, uint32_t prim, uint32_t data,
++                                  uint32_t vertex_count, uint32_t stride) {
++  if (!REXCVAR_GET(sr_native_draws)) return;
++  std::lock_guard<std::mutex> lock(front_mutex_);
++  guest_base_ = base;
++  uint32_t dev = GuestDevice(base);
++  if (!dev) return;
++  BeginCmd(Op::kDrawInline);
++  CaptureRing(base, dev);
++  CaptureDevice(base, dev);
++  if (data && stride) CaptureBytes(base, data, vertex_count * stride);
++  cur_.u[0] = prim;
++  cur_.u[1] = data;
++  cur_.u[2] = vertex_count;
++  cur_.u[3] = stride;
++  EndCmd(base);
++}
++
++void NativeFrontend::Resolve(uint8_t* base, uint32_t flags, uint32_t src_rect, uint32_t dest_texture,
++                       uint32_t dest_point, uint32_t clear_color, float clear_z,
++                       uint32_t clear_stencil,uint32_t level,uint32_t slice) {
++  if (!REXCVAR_GET(sr_native_resolves)) return;
++  std::lock_guard<std::mutex> lock(front_mutex_);
++  guest_base_ = base;
++  uint32_t dev = GuestDevice(base);
++  if (!dev) return;
++  BeginCmd(Op::kResolve);
++  CaptureRing(base, dev);
++  CaptureDevice(base, dev);
++  if (src_rect) CaptureBytes(base, src_rect, 16);
++  if (dest_point) CaptureBytes(base, dest_point, 8);
++  if (dest_texture) CaptureBytes(base, dest_texture, 0x40);
++  if (clear_color) CaptureBytes(base, clear_color, 16);
++  cur_.u[0] = flags;
++  cur_.u[1] = src_rect;
++  cur_.u[2] = dest_texture;
++  cur_.u[3] = dest_point;
++  cur_.u[4] = clear_color;
++  cur_.u[5] = clear_stencil;
++  cur_.u[6] = level;
++  cur_.u[7] = slice;
++  cur_.f = clear_z;
++  EndCmd(base);
++}
++
++void NativeFrontend::BeginTiling(uint8_t* base, uint32_t count, uint32_t rects, uint32_t clear_color,
++                           float clear_z, uint32_t clear_stencil) {
++  std::lock_guard<std::mutex> lock(front_mutex_);
++  guest_base_ = base;
++  uint32_t dev = GuestDevice(base);
++  BeginCmd(Op::kBeginTiling);
++  if (dev) {
++    CaptureRing(base, dev);
++    CaptureDevice(base, dev);
++  }
++  if (rects && count) CaptureBytes(base, rects, 16 * std::min(count, 64u));
++  if (clear_color) CaptureBytes(base, clear_color, 16);
++  cur_.u[0] = count;
++  cur_.u[1] = rects;
++  cur_.u[2] = clear_color;
++  cur_.u[3] = clear_stencil;
++  cur_.f = clear_z;
++  EndCmd(base);
++}
++
++void NativeFrontend::EndTiling() {
++  std::lock_guard<std::mutex> lock(front_mutex_);
++  if (!guest_base_) return;
++  BeginCmd(Op::kEndTiling);
++  EndCmd(guest_base_);
++}
++
++void NativeFrontend::Clear(uint8_t* base, uint32_t count, uint32_t rects, uint32_t flags,
++                     const float color[4], float z, uint32_t stencil) {
++  std::lock_guard<std::mutex> lock(front_mutex_);
++  guest_base_ = base;
++  uint32_t dev = GuestDevice(base);
++  if (!dev) return;
++  BeginCmd(Op::kClear);
++  CaptureRing(base, dev);
++  CaptureDevice(base, dev);
++  if (rects && count) CaptureBytes(base, rects, 16 * std::min(count, 64u));
++  cur_.u[0] = rects ? std::min(count, 64u) : 0;
++  cur_.u[1] = rects;
++  cur_.u[2] = flags;
++  std::memcpy(&cur_.u[3], color, 4 * sizeof(float));
++  cur_.u[7] = stencil;
++  cur_.f = z;
++  EndCmd(base);
++}
++
++void NativeFrontend::OnPassEnd(int pass) {
++  if (REXCVAR_GET(sr_native_dump_after_pass) < 0) return;  // debug dumps only
++  std::lock_guard<std::mutex> lock(front_mutex_);
++  if (!guest_base_) return;
++  BeginCmd(Op::kPassEnd);
++  cur_.u[0] = uint32_t(pass);
++  EndCmd(guest_base_);
++}
++
++void NativeFrontend::SyncRing(uint8_t* base, uint32_t dev) {
++  std::lock_guard<std::mutex> lock(front_mutex_);
++  guest_base_ = base;
++  BeginCmd(Op::kRing);
++  CaptureRing(base, dev);
++  EndCmd(base);
++}
++
++void NativeFrontend::ResyncRing(uint8_t* base, uint32_t dev) {
++  std::lock_guard<std::mutex> lock(front_mutex_);
++  if (dev) ring_last_ = Load32(base, dev + kDev.ring_write) + 4;
++}
++
++void NativeFrontend::OnSwap(uint8_t* base, uint32_t front_buffer_texture, uint64_t swap_number) {
++  ++front_frame_;
++  std::lock_guard<std::mutex> lock(front_mutex_);
++  guest_base_ = base;
++  BeginCmd(Op::kSwap);
++  CaptureRing(base, GuestDevice(base));
++  if (front_buffer_texture) CaptureBytes(base, front_buffer_texture, 0x40);
++  cur_.u[0] = front_buffer_texture;
++  cur_.u64 = swap_number;
++  if(packet_sink_ && !worker_stop_) {
++    auto gamma=std::make_shared<std::array<uint32_t,256>>();
++    bool available=GuestGammaRamp256(gamma->data());
++    cur_.gamma_enabled=available && REXCVAR_GET(sr_native_gamma_ramp) && std::any_of(gamma->begin(),gamma->end(),[](uint32_t entry){return entry!=0;});
++    cur_.gamma=std::move(gamma);
++  }
++  EndCmd(base);
++  if(packet_sink_ && (capture_timings.pm4_us+capture_timings.textures_us>100000 || front_frame_%120==0))
++    REXLOG_INFO("native Vulkan capture frame={} pm4_ms={} textures_ms={} reads={} bytes={} virtual_queries={} watch_ms={} read_ms={} hash_ms={} copy_ms={} new={} watch_dirty={} revalidated={} changed={} entries={}",front_frame_,capture_timings.pm4_us/1000,capture_timings.textures_us/1000,capture_timings.reads,capture_timings.bytes,capture_timings.queries,capture_timings.watch_us/1000,capture_timings.read_us/1000,capture_timings.hash_us/1000,capture_timings.copy_us/1000,capture_timings.new_entries,capture_timings.watch_dirty,capture_timings.revalidated,capture_timings.changed,captured_textures_.size());
++  capture_timings={};
++  if(front_frame_%120==0) FlushTextureAudit(packet_sink_?"vulkan":"d3d12_capture",front_frame_);
++  if (worker_mode_) {
++    FlushBatch();
++    // sr_native_worker_lag 0: the frame is recorded before the guest continues.
++    // 1: the worker may still record this frame while the guest builds the
++    // next one (everything a command reads from guest memory is captured,
++    // except texture data - watched - and shader literal tables).
++    uint64_t submitted;
++    {
++      std::lock_guard<std::mutex> qlock(queue_mutex_);
++      submitted = batches_submitted_;
++    }
++    {
++      CpuTimer cpu_timer(front_cpu_timings.wait_ns);
++      WaitWorkerIdle(REXCVAR_GET(sr_native_worker_lag) ? prev_swap_batches_ : submitted);
++    }
++    prev_swap_batches_ = submitted;
++  }
++  if(CpuProfiling() && front_frame_%120==0) {
++    REXLOG_INFO("native CPU frontend (ms/frame over 120): api={} capture={:.2f} worker_wait={:.2f}",packet_sink_?"vulkan":"d3d12",front_cpu_timings.capture_ns/120000000.0,front_cpu_timings.wait_ns/120000000.0);
++    front_cpu_timings.capture_ns=front_cpu_timings.wait_ns=0;
++  }
++}
++
++void NativeFrontend::VertexRange::Resolve() {
++  if (resolved) return;
++  resolved = true;
++  uint32_t isize = index32 ? 4 : 2;
++  if (!ib_phys || (uint64_t(start_index) + index_count) * isize > ib_size) return;
++  const uint8_t* idx = GuestPtr(nullptr,0xA0000000u+ib_phys,ib_size);
++  uint32_t reset = reset_index;
++  uint32_t lo = ~0u, hi = 0;
++  // SSE4.1: big-endian indices byte-swapped with pshufb; reset indices are
++  // excluded from the maximum (they can only be the minimum if every index is
++  // a reset, which the lo > hi check below rejects).
++  uint32_t i = start_index;
++  const uint32_t end_index = start_index + index_count;
++  for (; i < end_index; ++i) {
++    uint32_t x = LoadIndex(idx, i, index32, index_endian);
++    if (index32) x &= 0xFFFFFFu;
++    if (x == reset) continue;
++    lo = std::min(lo, x);
++    hi = std::max(hi, x);
++  }
++  if (lo > hi) return;
++  int64_t f = int64_t(lo) + base_vertex, e = int64_t(hi) + base_vertex + 1;
++  if (f >= 0 && e > f) {
++    first = uint32_t(f);
++    end = uint32_t(e);
++  }
++}
++
++NativeFrontend& NativeFrontend::Get() {static NativeFrontend frontend;return frontend;}
++NativeFrontend::~NativeFrontend(){ShutdownWorker();}
++bool NativeFrontend::InstallPacketSink(PacketSink sink,std::function<void()> cancel) {
++  std::lock_guard lock(front_mutex_);
++  if(!sink || worker_stop_ || packet_sink_) return false;
++  packet_sink_=std::move(sink);cancel_packet_sink_=std::move(cancel);return true;
++}
++bool NativeFrontend::SubmitCapturedBatch(std::unique_ptr<WorkBatch> batch,std::string& error) {
++  std::lock_guard lock(queue_mutex_);
++  if(worker_stop_ || !packet_sink_ || !batch) {
++    error=worker_error_.empty()?"Native capture worker is stopped or unavailable":worker_error_;return false;
++  }
++  if(!worker_.joinable()) worker_=std::thread(&NativeFrontend::WorkerMain,this);
++  work_queue_.push_back(std::move(batch));++batches_submitted_;
++  queue_cv_.notify_one();return true;
++}
++bool NativeFrontend::Drain(std::string& error) {
++  std::unique_lock lock(queue_mutex_);
++  const auto until=batches_submitted_;
++  done_cv_.wait(lock,[&]{return worker_stop_ || batches_done_>=until;});
++  error=worker_error_;
++  return !packet_sink_failed_ && batches_done_>=until;
++}
++void NativeFrontend::FlushBatch() {
++  if(!batch_ || batch_->cmds.empty()) return;
++  auto submitted=std::move(batch_);
++  {
++    std::lock_guard lock(queue_mutex_);
++    if(!free_batches_.empty()){batch_=std::move(free_batches_.back());free_batches_.pop_back();}
++  }
++  if(!batch_) batch_=std::make_unique<WorkBatch>();
++  std::string error;
++  if(!SubmitCapturedBatch(std::move(submitted),error)) throw std::runtime_error(error);
++}
++void NativeFrontend::CaptureBytes(uint8_t*,uint32_t address,uint32_t length) {
++  if(!length)return;
++  std::vector<uint8_t> bytes;std::string error;
++  if(!ReadGuestBytes(*REX_KERNEL_MEMORY(),address,length,bytes,error)) throw std::runtime_error(error);
++  if(batch_->bytes.size()+bytes.size()>UINT32_MAX) throw std::runtime_error("Native capture arena exceeds 32-bit range");
++  auto offset=uint32_t(batch_->bytes.size());
++  batch_->bytes.insert(batch_->bytes.end(),bytes.begin(),bytes.end());
++  batch_->ranges.push_back({address,length,offset});
++}
++void NativeFrontend::Execute(uint8_t*,const WorkBatch& batch,const WorkCmd& cmd) {
++  graphics::guest::RenderPacket packet;std::string error;
++  bool ok=graphics::guest::ReplayCapturedRenderPacket(batch,cmd,mirror_,packet,error);
++  if(ok) {
++    ++stats_.packets_decoded;
++    if(std::holds_alternative<graphics::guest::DrawPacket>(packet))++stats_.draws;
++    if(std::holds_alternative<graphics::guest::ResolvePacket>(packet))++stats_.resolves;
++    if(std::holds_alternative<graphics::guest::SwapPacket>(packet))++stats_.packet_swaps;
++    ok=packet_sink_(std::move(packet),error);
++  }
++  if(!ok) throw std::runtime_error(error.empty()?"Native render packet rejected":error);
++}
++void NativeFrontend::WorkerMain() {
++  for(;;) {
++    std::unique_ptr<WorkBatch> batch;
++    {
++      std::unique_lock lock(queue_mutex_);
++      queue_cv_.wait(lock,[&]{return worker_stop_ || !work_queue_.empty();});
++      if(worker_stop_) return;
++      batch=std::move(work_queue_.front());work_queue_.pop_front();
++    }
++    try {for(const auto& cmd:batch->cmds){if(worker_stop_)return;Execute(nullptr,*batch,cmd);}}
++    catch(const std::exception& error) {
++      std::lock_guard lock(queue_mutex_);worker_error_=error.what();packet_sink_failed_=true;
++      worker_stop_=true;++stats_.packet_errors;done_cv_.notify_all();queue_cv_.notify_all();return;
++    }
++    batch->Clear();
++    {
++      std::lock_guard lock(queue_mutex_);++batches_done_;free_batches_.push_back(std::move(batch));
++    }
++    done_cv_.notify_all();
++  }
++}
++void NativeFrontend::ShutdownWorker() {
++  worker_stop_=true;queue_cv_.notify_all();done_cv_.notify_all();
++  std::function<void()> cancel;
++  {
++    std::lock_guard lock(front_mutex_);
++    cancel=std::exchange(cancel_packet_sink_,{});
++    if(batch_)batch_->Clear();
++  }
++  if(cancel)cancel();
++  if(worker_.joinable())worker_.join();
++  if(watch_memory_ && watch_handle_){watch_memory_->UnregisterPhysicalMemoryInvalidationCallback(watch_handle_);watch_handle_=nullptr;}
++  std::lock_guard lock(queue_mutex_);packet_sink_={};work_queue_.clear();free_batches_.clear();
++}
++} // namespace superman_returns::native
++
+diff --git a/port/src/native_renderer/guest_reads_android.h b/port/src/native_renderer/guest_reads_android.h
+new file mode 100644
+--- /dev/null
++++ b/port/src/native_renderer/guest_reads_android.h
+@@ -0,0 +1,11 @@
++#pragma once
++#include <cstdint>
++#include <cstddef>
++#include <string>
++#include <vector>
++namespace rex::memory {class Memory;}
++namespace superman_returns::native {
++// The returned view is only for capture on the guest thread, never the replay worker.
++const uint8_t* ValidatedGuestPointer(rex::memory::Memory&,uint32_t,size_t,std::string&);
++bool ReadGuestBytes(rex::memory::Memory&,uint32_t,size_t,std::vector<uint8_t>&,std::string&);
++}
+diff --git a/port/src/native_renderer/guest_reads_android.cpp b/port/src/native_renderer/guest_reads_android.cpp
+new file mode 100644
+--- /dev/null
++++ b/port/src/native_renderer/guest_reads_android.cpp
+@@ -0,0 +1,50 @@
++#include "guest_reads_android.h"
++#include <rex/system/xmemory.h>
++#include <algorithm>
++#include <cstdio>
++#include <cstring>
++
++namespace superman_returns::native {
++const uint8_t* ValidatedGuestPointer(rex::memory::Memory& memory,uint32_t address,size_t size,std::string& error) {
++  error.clear();
++  auto fail=[&](const char* why)->const uint8_t* {
++    char context[128];std::snprintf(context,sizeof(context),"Guest read %08X + %zu: %s",address,size,why);
++    error=context;return nullptr;
++  };
++  if(!size || size>0x20000000ull || uint64_t(address)+size>0x100000000ull)
++    return fail("invalid or overflowing range");
++  uint32_t query=address;
++  rex::memory::BaseHeap* heap=nullptr;
++  const uint8_t* result=nullptr;
++  if(address>=0xA0000000u) {
++    uint64_t physical=uint64_t(address&0x1FFFFFFFu)+(address>=0xE0000000u?0x1000:0);
++    if(physical+size>0x20000000ull) return fail("physical mapping exceeded");
++    query=uint32_t(physical);heap=memory.GetPhysicalHeap();
++    result=memory.TranslatePhysical<const uint8_t*>(query);
++  } else {
++    heap=memory.LookupHeap(address);
++    if(!heap) return fail("unmapped guest address");
++    result=memory.TranslateVirtual<const uint8_t*>(address);
++  }
++  const uint64_t end=uint64_t(query)+size;
++  if(query<heap->heap_base() || end>uint64_t(heap->heap_base())+heap->heap_size())
++    return fail("read crosses guest heap boundary");
++  for(uint64_t current=query;current<end;) {
++    rex::memory::HeapAllocationInfo info{};
++    const uint32_t page=uint32_t(current)&~(heap->page_size()-1);
++    if(!heap->QueryRegionInfo(page,&info) ||
++       !(info.state&rex::memory::kMemoryAllocationCommit) ||
++       !(info.protect&rex::memory::kMemoryProtectRead)) return fail("uncommitted or unreadable guest pages");
++    const uint64_t next=uint64_t(info.base_address)+info.region_size;
++    if(next<=current) return fail("invalid heap region extent");
++    current=std::min(next,end);
++  }
++  return result;
++}
++bool ReadGuestBytes(rex::memory::Memory& memory,uint32_t address,size_t size,std::vector<uint8_t>& out,std::string& error) {
++  out.clear();
++  auto source=ValidatedGuestPointer(memory,address,size,error);
++  if(!source) return false;
++  out.resize(size);std::memcpy(out.data(),source,size);return true;
++}
++}
