@@ -46,3 +46,34 @@ add_executable(test_native_commands $<TARGET_OBJECTS:test_native_commands_object
 target_link_libraries(test_native_commands PRIVATE native_packet_capture sr_runtime log)
 target_include_directories(test_native_commands PRIVATE "${SR_PC}/native_renderer")
 target_link_options(test_native_commands PRIVATE -Wl,--gc-sections)
+set(SR_VULKAN_HEADERS "${SR_SDK}/thirdparty/vulkan-headers/include" CACHE PATH "Pinned Vulkan headers" FORCE)
+set(SR_VULKAN_DXC "C:/Users/webpa/OneDrive/Documentos/projetos/superman_returns_recomp/.tools/dxc/bin/x64/dxc.exe" CACHE FILEPATH "Host shader compiler")
+add_subdirectory("${SR_PC}/graphics/vulkan" vulkan-core)
+add_executable(test_native_provider "${SR_ROOT}/tests/native/test_native_provider.cpp" "${SR_PC}/graphics/vulkan/platform/android_provider.cpp" "${SR_ROOT}/tests/native/runtime_test_support.cpp")
+target_include_directories(test_native_provider PRIVATE "${SR_PC}/native_renderer")
+target_compile_definitions(test_native_provider PRIVATE _LIBCPP_ENABLE_EXPERIMENTAL VK_USE_PLATFORM_ANDROID_KHR)
+target_link_libraries(test_native_provider PRIVATE sr_vulkan_core native_packet_capture sr_runtime android log)
+target_link_options(test_native_provider PRIVATE -Wl,--gc-sections)
+
+set(SR_VULKAN_TESTS "${SR_ROOT}/.tools/pc-native/tests/vulkan")
+add_executable(test_vulkan_regressions
+ "${SR_VULKAN_TESTS}/main.cpp"
+ "${SR_VULKAN_TESTS}/test_policy.cpp"
+ "${SR_VULKAN_TESTS}/test_context.cpp"
+ "${SR_VULKAN_TESTS}/test_frame_loop.cpp"
+ "${SR_VULKAN_TESTS}/test_swapchain.cpp"
+ "${SR_VULKAN_TESTS}/test_triangle.cpp"
+ "${SR_VULKAN_TESTS}/test_smoke_options.cpp"
+ "${SR_VULKAN_TESTS}/test_device_requirements.cpp"
+ "${SR_VULKAN_TESTS}/test_descriptors.cpp"
+ "${SR_VULKAN_TESTS}/test_resources.cpp"
+ "${SR_VULKAN_TESTS}/test_render_targets.cpp"
+ "${SR_VULKAN_TESTS}/test_image_state.cpp"
+ "${SR_VULKAN_TESTS}/test_shader_service.cpp"
+ "${SR_VULKAN_TESTS}/test_game_pipeline.cpp"
+ "${SR_VULKAN_TESTS}/test_resolve.cpp"
+ "${SR_VULKAN_TESTS}/test_composition.cpp"
+ "${SR_VULKAN_TESTS}/test_state_shadow.cpp"
+)
+target_include_directories(test_vulkan_regressions PRIVATE "${SR_ROOT}/.tools/pc-native/tests/native")
+target_link_libraries(test_vulkan_regressions PRIVATE sr_vulkan_core)
