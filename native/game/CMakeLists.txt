@@ -22,10 +22,11 @@ target_link_libraries(superman_recomp PRIVATE rex::runtime)
 target_include_directories(superman_recomp PRIVATE "${SR_GUEST_ROOT}/generated/default")
 target_compile_options(superman_recomp PRIVATE -fno-strict-aliasing -fwrapv -Wno-unused-variable -Wno-unused-label)
 target_precompile_headers(superman_recomp PRIVATE "${SR_GUEST_ROOT}/generated/default/superman_returns_pch.h")
-add_library(superman_game SHARED main.cpp hooks.cpp "${SR_GUEST_ROOT}/xma_fixes.cpp" "${SR_GUEST_ROOT}/skip_intro.cpp" $<TARGET_OBJECTS:superman_recomp>)
+add_library(superman_game SHARED main.cpp hooks.cpp "${SR_GUEST_ROOT}/xma_fixes.cpp" "${SR_GUEST_ROOT}/skip_intro.cpp" "../../../superman_returns_recomp/port/src/native_renderer/native_graphics_system_vulkan.cpp" $<TARGET_OBJECTS:superman_recomp>)
 target_include_directories(superman_game PRIVATE "${SR_GUEST_ROOT}" "${SR_GUEST_ROOT}/generated/default")
 target_link_libraries(superman_game PRIVATE rex::runtime log)
 rexglue_configure_target(superman_game)
 target_link_options(superman_game PRIVATE -Wl,--no-undefined)
+
 
 
