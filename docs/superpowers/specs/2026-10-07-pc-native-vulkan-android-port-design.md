@@ -1,7 +1,7 @@
 # Port do renderer nativo Vulkan do PC para Android
 
 Data: 2026-10-07
-Estado: desenho aprovado em conversa; especificação escrita aguardando revisão do usuário.
+Estado: desenho e especificação escrita aprovados pelo usuário em 2026-10-07.
 
 ## Objetivo e entendimento aprovado
 
