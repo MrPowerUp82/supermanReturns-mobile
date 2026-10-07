@@ -27,3 +27,4 @@ target_include_directories(superman_game PRIVATE "${SR_GUEST_ROOT}" "${SR_GUEST_
 target_link_libraries(superman_game PRIVATE rex::runtime log)
 rexglue_configure_target(superman_game)
 target_link_options(superman_game PRIVATE -Wl,--no-undefined)
+
