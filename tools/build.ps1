@@ -20,7 +20,9 @@ $artifacts=Join-Path $root 'artifacts'
 New-Item -ItemType Directory -Force $artifacts | Out-Null
 $apk=Join-Path $artifacts 'superman-returns-mobile-0.1.0-dev.apk'
 Copy-Item -LiteralPath (Join-Path $root 'android\app\build\outputs\apk\debug\app-debug.apk') -Destination $apk
-python (Join-Path $root 'tools\verify_apk.py') $apk
+$verifyArgs=@($apk)
+if(Test-Path (Join-Path $root 'android\app\libs\arm64-v8a\libsuperman_game.so')) {$verifyArgs+='--with-game'}
+python (Join-Path $root 'tools\verify_apk.py') @verifyArgs
 if ($LASTEXITCODE -ne 0) { throw 'Verificação do APK falhou.' }
 & (Join-Path $AndroidSdk 'build-tools\35.0.0\apksigner.bat') verify $apk
 if ($LASTEXITCODE -ne 0) { throw 'Assinatura do APK inválida.' }

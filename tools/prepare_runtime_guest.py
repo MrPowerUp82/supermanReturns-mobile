@@ -1,0 +1,27 @@
+"""Prepare private game C++ for the pinned Android runtime's headers (never modify PC sources)."""
+import argparse
+from pathlib import Path
+import re
+import shutil
+
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--recomp',type=Path,required=True)
+args=parser.parse_args()
+root=Path(__file__).resolve().parents[1]
+source=args.recomp.resolve()/"port/generated/default"
+target=root/".tools/android-guest/generated/default"
+shutil.copytree(source,target,dirs_exist_ok=True)
+path=target/"superman_returns_init.cpp"
+text=path.read_text(encoding="utf-8")
+match=re.search(r"    \.codegen_flags = \{.*?    \},\n",text,re.S)
+if match:
+    if 'true' in match.group():
+        raise SystemExit('Non-default codegen flags require an explicit runtime compatibility review.')
+    # All flags are false: the older Android runtime assumes exactly this layout.
+    text=text[:match.start()]+text[match.end():]
+path.write_text(text,encoding="utf-8")
+shutil.copy2(args.recomp/"port/src/xma_fixes.cpp",root/".tools/android-guest/xma_fixes.cpp")
+intro=(args.recomp/"port/src/skip_intro.cpp").read_text(encoding="utf-8")
+intro=intro.replace('#include "sr_settings.h"', '#include <rex/cvar.h>\nREXCVAR_DEFINE_BOOL(sr_skip_intro, true, "Superman", "Skip boot logo/legal sequence");')
+(root/".tools/android-guest/skip_intro.cpp").write_text(intro,encoding="utf-8")
+print(target)

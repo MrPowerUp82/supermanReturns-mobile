@@ -18,6 +18,7 @@ struct Session {
     vk::FrameLoop loop;
 };
 std::unique_ptr<Session> session;
+uint64_t session_owner=0;
 std::mutex render_mutex, input_mutex;
 uint32_t buttons = 0;
 std::array<float,6> axes{};
@@ -35,7 +36,8 @@ bool rebuild(Session& s, vk::Error& e) {
 extern "C" JNIEXPORT jstring JNICALL
 Java_org_supermanreturns_mobile_NativeBridge_probe(JNIEnv* env,jclass) {
     vk::Context c; vk::Error e; c.logger=androidLog;
-    if(!c.CreateInstance({},false,e)) return str(env,failure(e));
+    const char* extensions[]={VK_KHR_SURFACE_EXTENSION_NAME,VK_KHR_ANDROID_SURFACE_EXTENSION_NAME};
+    if(!c.CreateInstance(extensions,false,e)) return str(env,failure(e));
     std::vector<vk::DeviceCandidate> devices;
     if(!c.EnumerateCandidates(VK_NULL_HANDLE,devices,e)) return str(env,failure(e));
     std::ostringstream out;
@@ -45,8 +47,10 @@ Java_org_supermanreturns_mobile_NativeBridge_probe(JNIEnv* env,jclass) {
     return str(env,out.str());
 }
 extern "C" JNIEXPORT jstring JNICALL
-Java_org_supermanreturns_mobile_NativeBridge_openSurface(JNIEnv* env,jclass,jobject surface) {
-    std::lock_guard lock(render_mutex); session.reset();
+Java_org_supermanreturns_mobile_NativeBridge_openSurface(JNIEnv* env,jclass,jlong owner,jobject surface) {
+    std::lock_guard lock(render_mutex);
+    if(uint64_t(owner)<session_owner) return str(env,"ERRO: sessão Vulkan substituída");
+    session.reset();session_owner=uint64_t(owner);
     auto s=std::make_unique<Session>(); vk::Error e; s->context.logger=androidLog;
     s->window.reset(ANativeWindow_fromSurface(env,surface));
     if(!s->window) return str(env,"ERRO: Surface Android indisponível");
@@ -62,9 +66,9 @@ Java_org_supermanreturns_mobile_NativeBridge_openSurface(JNIEnv* env,jclass,jobj
     session=std::move(s); return str(env,"Vulkan ativo · "+name);
 }
 extern "C" JNIEXPORT jstring JNICALL
-Java_org_supermanreturns_mobile_NativeBridge_draw(JNIEnv* env,jclass) {
+Java_org_supermanreturns_mobile_NativeBridge_draw(JNIEnv* env,jclass,jlong owner) {
     std::lock_guard lock(render_mutex);
-    if(!session) return str(env,"ERRO: sessão Vulkan indisponível");
+    if(!session || uint64_t(owner)!=session_owner) return str(env,"ERRO: sessão Vulkan indisponível");
     auto& s=*session; vk::Error e;
     auto result=s.loop.Draw(s.context,s.chain,[&](VkCommandBuffer cmd,uint32_t) {
         uint32_t state; { std::lock_guard input_lock(input_mutex); state=buttons; }
@@ -81,8 +85,8 @@ Java_org_supermanreturns_mobile_NativeBridge_draw(JNIEnv* env,jclass) {
     return str(env,"Vulkan · quadros apresentados: "+std::to_string(s.loop.presented));
 }
 extern "C" JNIEXPORT void JNICALL
-Java_org_supermanreturns_mobile_NativeBridge_closeSurface(JNIEnv*,jclass) {
-    std::lock_guard lock(render_mutex); session.reset();
+Java_org_supermanreturns_mobile_NativeBridge_closeSurface(JNIEnv*,jclass,jlong owner) {
+    std::lock_guard lock(render_mutex); if(uint64_t(owner)==session_owner) session.reset();
 }
 extern "C" JNIEXPORT void JNICALL
 Java_org_supermanreturns_mobile_NativeBridge_setInput(JNIEnv*,jclass,jint b,jfloat lx,jfloat ly,jfloat rx,jfloat ry,jfloat lt,jfloat rt) {

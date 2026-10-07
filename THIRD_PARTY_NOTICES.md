@@ -8,8 +8,8 @@ daquele projeto; verificar as condições do projeto antes de redistribuí-lo.
 
 O desenho do instalador Android, os offsets XDVDFS e as decisões de touch/
 ARM64 foram estudados no [Skate3-Mobile](https://github.com/Buku313/Skate3-Mobile),
-revisão `e1b28c185d578c22e3a630f6f3b13ed123462a43`. As classes Java deste
-projeto são implementações novas. Não foram copiados assets, branding, mods,
+revisão `e1b28c185d578c22e3a630f6f3b13ed123462a43`. As classes do instalador,
+launcher e controles são implementações novas. Não foram copiados assets, branding, mods,
 shaders de jogo, código gerado ou binários desse repositório.
 
 O Gradle Wrapper em `android/gradlew*` e `android/gradle/wrapper/` foi obtido
@@ -29,3 +29,12 @@ distribuído conforme os avisos libc++ do NDK em
 
 Superman Returns e suas marcas pertencem aos respectivos titulares. Não há
 arquivos comerciais do jogo no APK ou nas fontes versionadas.
+
+A opção de gameplay usa o fork Android ReXGlue na revisão
+`edd4344723ecac3ffa18c5dcd2fcc268f468ff9e`, com SDL3 e dependências fixadas
+pelos submódulos do upstream. As classes `org/libsdl/app` vêm desse SDL3.
+Os textos de licença e avisos dos diretórios upstream são reunidos por
+`tools/collect_runtime_notices.py` em `assets/runtime-notices.txt` no APK.
+ReXGlue usa BSD-3-Clause e SDL usa zlib; as demais dependências preservam
+seus próprios termos, incluindo FFmpeg LGPL. O código gerado e a correção
+XMA vêm da recompilação local e são preparados em `.tools/android-guest/`.

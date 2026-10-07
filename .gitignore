@@ -4,7 +4,7 @@
 **/build/
 android/local.properties
 artifacts/
-game/
+/game/
 *.iso
 *.xex
 *.AST
@@ -13,3 +13,4 @@ __pycache__/
 .cxx/
 **/.cxx/
 *.iml
+android/app/libs/

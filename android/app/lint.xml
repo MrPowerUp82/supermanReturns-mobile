@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- Upstream SDL HIDAPI is disabled by the runtime. Its optional Bluetooth
+         path checks BLUETOOTH_CONNECT before initialization. We do not request
+         Bluetooth access; Android InputDevice handles paired gamepads. -->
+    <issue id="MissingPermission">
+        <ignore path="src/main/java/org/libsdl/app/HIDDeviceBLESteamController.java" />
+        <ignore path="src/main/java/org/libsdl/app/HIDDeviceManager.java" />
+    </issue>
+    <!-- SDL already uses the flagged overload on API 33+, our minimum API.
+         The reported unflagged overload is in the unreachable older branch. -->
+    <issue id="UnspecifiedRegisterReceiverFlag">
+        <ignore path="src/main/java/org/libsdl/app/HIDDeviceManager.java" />
+    </issue>
+</lint>

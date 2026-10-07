@@ -1,0 +1,31 @@
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 048c19b..8691cc9 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -65,6 +65,11 @@
+ // budgeted the same way on both sides of the GPU.
+ REXCVAR_DECLARE(int32_t, vulkan_device_lost_soft_retries);
+ 
++REXCVAR_DEFINE_INT32(vulkan_mobile_cache_clear_interval, 0, "GPU/Vulkan",
++                    "Frames between synchronized cache trims on memory-constrained devices; 0 disables")
++    .range(0, 3600)
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ REXCVAR_DEFINE_BOOL(vulkan_readback_resolve, false, "GPU/Vulkan",
+                     "Read render-to-texture results on the CPU")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+@@ -7477,6 +7482,14 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+     // Submission already closed now, so minus 1.
+     closed_frame_submissions_[(frame_current_++) % kMaxFramesInFlight] = GetCurrentSubmission() - 1;
+ 
++    const uint32_t mobile_trim_interval = REXCVAR_GET(vulkan_mobile_cache_clear_interval);
++    if (mobile_trim_interval && frame_current_ % mobile_trim_interval == 0) {
++      // Use the existing synchronized cleanup path. It keeps render targets
++      // owning EDRAM data and retains pipeline/shader caches.
++      ClearCaches();
++      REXGPU_INFO("Mobile Vulkan cache trim at frame {}", frame_current_);
++    }
++
+     if (cache_clear_requested_ && AwaitAllQueueOperationsCompletion()) {
+       cache_clear_requested_ = false;
+ 

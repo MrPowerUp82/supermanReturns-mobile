@@ -15,6 +15,8 @@ import android.widget.FrameLayout;
 import android.widget.TextView;
 
 public final class DiagnosticsActivity extends Activity implements SurfaceHolder.Callback {
+    private static final java.util.concurrent.atomic.AtomicLong NEXT_OWNER=new java.util.concurrent.atomic.AtomicLong();
+    private final long owner=NEXT_OWNER.incrementAndGet();
     private final HandlerThread renderThread=new HandlerThread("sr-vulkan");
     private Handler worker;
     private SurfaceView surface;
@@ -26,6 +28,10 @@ public final class DiagnosticsActivity extends Activity implements SurfaceHolder
         super.onCreate(state); getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         renderThread.start(); worker=new Handler(renderThread.getLooper());
         FrameLayout frame=new FrameLayout(this); setContentView(frame);
+        frame.setOnApplyWindowInsetsListener((view,insets) -> {
+            var bars=insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.displayCutout());
+            view.setPadding(bars.left,bars.top,bars.right,bars.bottom); return insets;
+        });
         surface=new SurfaceView(this); surface.getHolder().addCallback(this); frame.addView(surface);
         controls=new ControllerView(this); frame.addView(controls);
         status=new TextView(this); status.setTextColor(0xfff4f5f7); status.setTextSize(13); status.setGravity(Gravity.CENTER);
@@ -33,20 +39,20 @@ public final class DiagnosticsActivity extends Activity implements SurfaceHolder
         FrameLayout.LayoutParams p=new FrameLayout.LayoutParams(-1,-2,Gravity.TOP); p.topMargin=12; frame.addView(status,p);
     }
     private void stop() {
-        generation++; worker.removeCallbacksAndMessages(null); controls.clear(); worker.post(NativeBridge::closeSurface);
+        generation++; worker.removeCallbacksAndMessages(null); controls.clear(); worker.post(() -> NativeBridge.closeSurface(owner));
     }
     private void start() {
         stop(); if(!resumed || !ready) return;
         final int token=generation;
         worker.post(() -> {
             if(token!=generation) return;
-            String opened=NativeBridge.openSurface(surface.getHolder().getSurface());
+            String opened=NativeBridge.openSurface(owner,surface.getHolder().getSurface());
             if(opened.startsWith("ERRO:")) { show(token,opened); return; }
             Runnable draw=new Runnable() {
                 long last;
                 @Override public void run() {
                     if(token!=generation) return;
-                    long before=android.os.SystemClock.uptimeMillis(); String result=NativeBridge.draw();
+                    long before=android.os.SystemClock.uptimeMillis(); String result=NativeBridge.draw(owner);
                     if(before-last>200 || result.startsWith("ERRO:")) {last=before;show(token,result+"\n"+NativeBridge.inputState());}
                     if(!result.startsWith("ERRO:")) worker.postDelayed(this,Math.max(1,33-(android.os.SystemClock.uptimeMillis()-before)));
                 }

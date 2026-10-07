@@ -13,6 +13,8 @@ import java.util.List;
 
 /** Multitouch controls, merged with a physical gamepad using XInput button bits. */
 final class ControllerView extends View {
+    interface InputSink {void set(int buttons,float lx,float ly,float rx,float ry,float lt,float rt);}
+    private final InputSink sink;
     private static final class Control {
         final String label; final float x,y,r; final int bit,axis;
         int pointer=-1; float dx,dy;
@@ -23,7 +25,8 @@ final class ControllerView extends View {
     private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
     private int padButtons;
     private final float[] padAxes=new float[6];
-    ControllerView(Context context) { super(context); setFocusable(true); setContentDescription("Controles Xbox 360 para teste multitouch"); }
+    ControllerView(Context context) {this(context,NativeBridge::setInput);}
+    ControllerView(Context context,InputSink sink) { super(context); this.sink=sink;setFocusable(true); setContentDescription("Controles Xbox 360 multitouch"); }
     @Override protected void onSizeChanged(int w,int h,int oldw,int oldh) {
         clear(); controls.clear(); float r=Math.min(h*.07f,w*.034f);
         add("L",.15f,.62f,r*1.8f,0,1); add("R",.67f,.62f,r*1.8f,0,2);
@@ -77,7 +80,7 @@ final class ControllerView extends View {
                 case 3 -> lt=1; case 4 -> rt=1;
             }
         }
-        NativeBridge.setInput(buttons,lx,ly,rx,ry,lt,rt);
+        sink.set(buttons,lx,ly,rx,ry,lt,rt);
     }
     boolean padKey(KeyEvent e) {
         int bit=switch(e.getKeyCode()) {

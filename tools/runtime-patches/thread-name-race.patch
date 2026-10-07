@@ -1,0 +1,42 @@
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index 08e3d06..0240acc 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -1676,6 +1676,7 @@ class PosixThread : public PosixConditionHandle<Thread> {
+   }
+ 
+   void set_name(std::string name) override {
++    std::lock_guard<std::mutex> lock(name_mutex_);
+     handle_.WaitStarted();
+     Thread::set_name(name);
+     if (name.length() > 15) {
+@@ -1707,6 +1708,8 @@ class PosixThread : public PosixConditionHandle<Thread> {
+   void Terminate(int exit_code) override { handle_.Terminate(exit_code); }
+ 
+   void WaitSuspended() { handle_.WaitSuspended(); }
++ private:
++  std::mutex name_mutex_;
+ };
+ 
+ thread_local PosixThread* current_thread_ = nullptr;
+diff --git a/src/system/xthread.cpp b/src/system/xthread.cpp
+index 5edeb58..5a60a43 100644
+--- a/src/system/xthread.cpp
++++ b/src/system/xthread.cpp
+@@ -450,9 +450,13 @@ X_STATUS XThread::Create() {
+     rex::thread::set_current_thread_id(handle());
+ 
+     // Set name immediately, if we have one.
+-    thread_->set_name(thread_name_);
+-
+-    PROFILE_THREAD_ENTER(thread_name_.c_str());
++    {
++      // A guest may rename this thread immediately after Resume. Serialize the
++      // startup copy with XThread::set_name to avoid racing std::string storage.
++      std::lock_guard<std::mutex> lock(thread_lock_);
++      thread_->set_name(thread_name_);
++      PROFILE_THREAD_ENTER(thread_name_.c_str());
++    }
+     PROFILE_THREAD_CREATED();
+ 
+     // Execute user code.

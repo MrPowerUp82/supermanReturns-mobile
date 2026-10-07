@@ -1,0 +1,43 @@
+diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
+index c7be36d..f84bdbf 100644
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -39,6 +39,11 @@
+ #include <rex/platform.h>
+ #include <rex/ui/vulkan/util.h>
+ 
++REXCVAR_DEFINE_INT32(vulkan_render_target_height_limit, 0, "GPU/Vulkan",
++                    "Limit host render target height for mobile profiles; 0 uses device limits")
++    .range(0, 8192)
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ REXCVAR_DEFINE_STRING(render_target_path_vulkan, "", "GPU/Vulkan",
+                       "Vulkan render target implementation path")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+@@ -2236,7 +2241,9 @@ uint32_t VulkanRenderTargetCache::GetMaxRenderTargetWidth() const {
+ uint32_t VulkanRenderTargetCache::GetMaxRenderTargetHeight() const {
+   const ui::vulkan::VulkanDevice::Properties& device_properties =
+       command_processor_.GetVulkanDevice()->properties();
+-  return std::min(device_properties.maxFramebufferHeight, device_properties.maxImageDimension2D);
++  uint32_t height = std::min(device_properties.maxFramebufferHeight, device_properties.maxImageDimension2D);
++  const uint32_t limit = REXCVAR_GET(vulkan_render_target_height_limit);
++  return limit ? std::min(height, limit) : height;
+ }
+ 
+ RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(RenderTargetKey key) {
+@@ -2303,6 +2310,15 @@ RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(Ren
+     return nullptr;
+   }
+ 
++  if (REXCVAR_GET(vulkan_render_target_height_limit)) {
++    VkMemoryRequirements allocation_requirements;
++    dfn.vkGetImageMemoryRequirements(device, image, &allocation_requirements);
++    REXGPU_INFO("Mobile RT allocation: {}x{} samples={} format={} memory={} MiB",
++        image_create_info.extent.width, image_create_info.extent.height,
++        static_cast<uint32_t>(image_create_info.samples), static_cast<uint32_t>(image_create_info.format),
++        allocation_requirements.size >> 20);
++  }
++
+   // Create the image views.
+ 
+   VkImageViewCreateInfo view_create_info;

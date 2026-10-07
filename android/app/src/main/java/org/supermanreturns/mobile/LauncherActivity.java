@@ -20,7 +20,7 @@ public final class LauncherActivity extends Activity {
     private static final int PICK_ISO=7, GOLD=0xffe8b350, MUTED=0xffa8b9cc, WHITE=0xfff4f5f7;
     private InstallController installer;
     private TextView status, gpu;
-    private Button select, cancel, diagnostic;
+    private Button select, cancel, diagnostic,play;
     private ProgressBar progress;
     private final InstallController.Listener listener=this::render;
 
@@ -29,15 +29,19 @@ public final class LauncherActivity extends Activity {
         ScrollView scroll=new ScrollView(this); scroll.setFillViewport(true);
         LinearLayout column=new LinearLayout(this); column.setOrientation(LinearLayout.VERTICAL);
         column.setPadding(dp(26),dp(28),dp(26),dp(28)); scroll.addView(column); setContentView(scroll);
+        scroll.setOnApplyWindowInsetsListener((view,insets) -> {
+            var bars=insets.getInsets(android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.displayCutout());
+            view.setPadding(bars.left,bars.top,bars.right,bars.bottom); return insets;
+        });
         text(column,"PROJETO EXPERIMENTAL  /  ANDROID ARM64",11,GOLD,true);
         space(column,28);
         text(column,"SUPERMAN",38,WHITE,true); text(column,"RETURNS",38,GOLD,true);
         space(column,10); text(column,"MOBILE",14,MUTED,true);
         space(column,30);
         LinearLayout info=card(column);
-        text(info,"Primeira etapa do port",20,WHITE,true);
+        text(info,"Port experimental",20,WHITE,true);
         space(info,8);
-        text(info,"Importe os arquivos do seu jogo e teste Vulkan e controles no celular. Esta versão ainda não executa Superman Returns.",15,MUTED,false);
+        text(info,BuildConfig.HAS_GAME_RUNTIME ? "Importe os arquivos do seu jogo e inicie o runtime experimental com Vulkan e controles touch." : "Importe os arquivos do seu jogo e teste Vulkan e controles. O runtime do jogo não está incluído nesta compilação.",15,MUTED,false);
         space(column,18);
         LinearLayout device=card(column);
         text(device,Build.MANUFACTURER + " " + Build.MODEL,17,WHITE,true);
@@ -57,12 +61,14 @@ public final class LauncherActivity extends Activity {
             startActivityForResult(intent,PICK_ISO);
         });
         cancel=button(column,"Cancelar importação",false); cancel.setOnClickListener(v -> installer.cancel());
+        play=button(column,"Iniciar jogo experimental",true);play.setEnabled(false);
+        play.setOnClickListener(v -> startActivity(new Intent(this,GameActivity.class)));
         diagnostic=button(column,"Testar Vulkan e controles",false);
         diagnostic.setEnabled(false);
         diagnostic.setOnClickListener(v -> startActivity(new Intent(this,DiagnosticsActivity.class)));
         space(column,22);
         text(column,"Xbox 360 · Title ID 454107ED\nUse sua própria cópia. Nenhum arquivo do jogo é incluído no APK. A importação ocorre somente neste aparelho.",12,MUTED,false);
-        space(column,18); text(column,"0.1.0-dev · runtime e gameplay pendentes",11,GOLD,false);
+        space(column,18); text(column,BuildConfig.HAS_GAME_RUNTIME ? "0.1.0-dev · runtime experimental" : "0.1.0-dev · diagnóstico",11,GOLD,false);
         new Thread(() -> {
             String result;
             try { result=NativeBridge.probe(); } catch(UnsatisfiedLinkError | RuntimeException e) { result="Biblioteca nativa indisponível: " + e.getMessage(); }
@@ -79,6 +85,7 @@ public final class LauncherActivity extends Activity {
     private void render(InstallController.State state) {
         status.setText((state.installed()?"✓ Instalação preservada\n":"") + state.message());
         select.setEnabled(!state.busy()); cancel.setVisibility(state.busy()?View.VISIBLE:View.GONE);
+        play.setEnabled(BuildConfig.HAS_GAME_RUNTIME && state.installed() && !state.busy());
         progress.setVisibility(state.busy()?View.VISIBLE:View.GONE);
         progress.setIndeterminate(state.percent()<0); progress.setProgress(Math.max(0,state.percent()));
     }

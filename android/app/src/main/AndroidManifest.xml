@@ -1,10 +1,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="4198400" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
     <application android:label="Superman Returns Mobile" android:theme="@style/AppTheme"
         android:icon="@drawable/app_icon" android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules" android:appCategory="game"
         android:supportsRtl="true">
+        <meta-data android:name="SDL_ENV.SDL_ORIENTATIONS" android:value="LandscapeLeft LandscapeRight" />
+        <activity android:name=".GameActivity" android:exported="false" android:process=":game"
+            android:screenOrientation="sensorLandscape" android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:theme="@style/DiagnosticTheme" />
         <activity android:name=".DiagnosticsActivity" android:exported="false"
             android:screenOrientation="sensorLandscape" android:configChanges="orientation|screenSize"
             android:theme="@style/DiagnosticTheme" />
