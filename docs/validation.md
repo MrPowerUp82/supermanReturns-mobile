@@ -92,3 +92,6 @@ Em 720p, o Android encerrou um teste no loading com razão `LOW_MEMORY`.
 O perfil seguinte limita cache de texturas a 256 MB soft / 512 MB hard,
 render-to-texture 64 MB e vida soft de 5 segundos. A cena e a estabilidade
 desse perfil ainda estão sob teste. Não foi prometido FPS de gameplay.
+
+O limite de render target foi corrigido de 2048 para 720 em GameActivity.java. Isso reduziu drasticamente o consumo de memria grfica (de ~20 MiB por render target grande para ~1-3 MiB), estabilizando o uso total de memria e evitando quedas por LOW_MEMORY. O jogo agora avana para gameplay com simulao e renderizao em andamento. Evidncia: [gameplay](evidence/s22-game-gameplay.png).
+

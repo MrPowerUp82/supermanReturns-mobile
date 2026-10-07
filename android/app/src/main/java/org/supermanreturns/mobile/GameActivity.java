@@ -15,7 +15,7 @@ public final class GameActivity extends SDLActivity {
             "--draw_resolution_scale_x=1","--draw_resolution_scale_y=1","--resolution_scale=1",
             "--texture_cache_memory_limit_soft=256","--texture_cache_memory_limit_hard=512",
             "--texture_cache_memory_limit_render_to_texture=64","--texture_cache_memory_limit_soft_lifetime=5",
-            "--vulkan_mobile_cache_clear_interval=60","--vulkan_render_target_height_limit=2048"};
+            "--vulkan_mobile_cache_clear_interval=60","--vulkan_render_target_height_limit=720"};
     }
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
