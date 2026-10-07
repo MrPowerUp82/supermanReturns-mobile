@@ -33,3 +33,10 @@ add_executable(test_guest_reads $<TARGET_OBJECTS:test_guest_reads_object> "${SR_
 target_link_libraries(test_guest_reads PRIVATE sr_runtime log)
 add_test(NAME frontend_packets COMMAND test_frontend_packets)
 add_test(NAME guest_reads COMMAND test_guest_reads)
+add_executable(test_android_shader_library "${SR_ROOT}/tests/native/test_android_shader_library.cpp" "${SR_PC}/graphics/shaders/vulkan_shader_service.cpp")
+target_include_directories(test_android_shader_library PRIVATE "${SR_PC}/graphics/shaders")
+add_test(NAME android_shader_library COMMAND test_android_shader_library)
+
+if(ANDROID)
+  target_compile_definitions(test_android_shader_library PRIVATE _LIBCPP_ENABLE_EXPERIMENTAL)
+endif()
