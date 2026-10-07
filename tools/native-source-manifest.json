@@ -6,6 +6,8 @@
     "port/src/graphics/vulkan/**",
     "port/src/*.h",
     "docs/native-port-plan.md",
-    "docs/native-renderer.md"
+    "docs/native-renderer.md",
+    "port/src/graphics/backend_selection.*",
+    "tests/native/**"
   ]
 }

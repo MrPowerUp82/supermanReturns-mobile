@@ -115,6 +115,16 @@ class PrepareNativeRendererTests(unittest.TestCase):
         self.prepare()
         self.assertEqual((self.output / self.source.relative_to(self.pc)).read_bytes(), b'patched\n')
 
+    def test_lf_patch_context_matches_mixed_source_line_endings(self):
+        self.source.write_bytes(b'context\r\noriginal\nlast\r\n')
+        (self.patches / 'mixed.patch').write_bytes(
+            b'diff --git a/port/src/graphics/vulkan/example.cpp b/port/src/graphics/vulkan/example.cpp\n'
+            b'--- a/port/src/graphics/vulkan/example.cpp\n+++ b/port/src/graphics/vulkan/example.cpp\n'
+            b'@@ -1,3 +1,3 @@\n context\n-original\n+patched\n last\n')
+        self.prepare()
+        self.assertIn(b'patched', (self.output / self.source.relative_to(self.pc)).read_bytes())
+        self.assertEqual(self.source.read_bytes(), b'context\r\noriginal\nlast\r\n')
+
     def test_symlink_cannot_import_files_outside_source(self):
         external = self.root / 'outside.cpp'
         external.write_bytes(b'not a PC source')
