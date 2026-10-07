@@ -1,0 +1,148 @@
+diff --git a/include/rex/graphics/graphics_system.h b/include/rex/graphics/graphics_system.h
+index a6ff239..3ec2682 100644
+--- a/include/rex/graphics/graphics_system.h
++++ b/include/rex/graphics/graphics_system.h
+@@ -63,8 +63,8 @@ class GraphicsSystem : public system::IGraphicsSystem {
+   memory::Memory* memory() const { return memory_; }
+   runtime::FunctionDispatcher* function_dispatcher() const { return function_dispatcher_; }
+   system::KernelState* kernel_state() const { return kernel_state_; }
+-  ::rex::ui::GraphicsProvider* provider() const { return provider_.get(); }
+-  ::rex::ui::Presenter* presenter() const { return presenter_.get(); }
++  ::rex::ui::GraphicsProvider* provider() const override { return provider_.get(); }
++  ::rex::ui::Presenter* presenter() const override { return presenter_.get(); }
+ 
+   X_STATUS SetupPresentation(::rex::ui::WindowedAppContext* app_context) override;
+   X_STATUS SetupGuestGpu(runtime::FunctionDispatcher* function_dispatcher,
+@@ -79,18 +79,18 @@ class GraphicsSystem : public system::IGraphicsSystem {
+   RegisterFile* register_file() { return &register_file_; }
+   CommandProcessor* command_processor() const { return command_processor_.get(); }
+ 
+-  virtual void InitializeRingBuffer(uint32_t ptr, uint32_t size_log2);
+-  virtual void EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2);
+-  virtual void SetSystemCommandBufferGpuIdentifierAddress(uint32_t ptr);
++  void InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) override;
++  void EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) override;
++  void SetSystemCommandBufferGpuIdentifierAddress(uint32_t ptr) override;
+ 
+-  virtual void SetInterruptCallback(uint32_t callback, uint32_t user_data);
++  void SetInterruptCallback(uint32_t callback, uint32_t user_data) override;
+   void DispatchInterruptCallback(uint32_t source, uint32_t cpu);
+ 
+   virtual void ClearCaches();
+   virtual void InvalidateGpuMemory();
+ 
+   void InitializeShaderStorage(const std::filesystem::path& cache_root, uint32_t title_id,
+-                               bool blocking);
++                               bool blocking) override;
+ 
+   void RequestFrameTrace();
+   void BeginTracing();
+diff --git a/include/rex/system/interfaces/graphics.h b/include/rex/system/interfaces/graphics.h
+index a0ed931..889e016 100644
+--- a/include/rex/system/interfaces/graphics.h
++++ b/include/rex/system/interfaces/graphics.h
+@@ -12,6 +12,7 @@
+ #pragma once
+ 
+ #include <rex/system/xtypes.h>
++#include <filesystem>
+ 
+ // Forward declarations
+ namespace rex::runtime {
+@@ -19,6 +20,8 @@ class FunctionDispatcher;
+ }
+ namespace rex::ui {
+ class WindowedAppContext;
++class GraphicsProvider;
++class Presenter;
+ }
+ namespace rex::system {
+ class KernelState;
+@@ -45,6 +48,16 @@ class IGraphicsSystem {
+ 
+   virtual bool has_presentation() const = 0;
+ 
++  // Injected renderers need not derive from the stock Xenos GraphicsSystem.
++  virtual ui::GraphicsProvider* provider() const = 0;
++  virtual ui::Presenter* presenter() const = 0;
++  virtual void InitializeShaderStorage(const std::filesystem::path& cache_root,
++                                       uint32_t title_id, bool blocking) = 0;
++  virtual void SetInterruptCallback(uint32_t callback, uint32_t user_data) = 0;
++  virtual void InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) = 0;
++  virtual void EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) = 0;
++  virtual void SetSystemCommandBufferGpuIdentifierAddress(uint32_t ptr) = 0;
++
+   // One-shot convenience for callers that don't care about the split.
+   X_STATUS Setup(runtime::FunctionDispatcher* function_dispatcher, KernelState* kernel_state,
+                  ui::WindowedAppContext* app_context, bool with_presentation) {
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_video.cpp b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+index f274640..c0e1093 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_video.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_video.cpp
+@@ -321,7 +321,7 @@ void VdSetGraphicsInterruptCallback_entry(u32 callback, mapped_void user_data) {
+   // r3 = bool 0/1 - 0 is normal interrupt, 1 is some acquire/lock mumble
+   // r4 = user_data (r4 of VdSetGraphicsInterruptCallback)
+   auto* graphics_system =
+-      static_cast<graphics::GraphicsSystem*>(REX_KERNEL_STATE()->emulator()->graphics_system());
++      REX_KERNEL_STATE()->emulator()->graphics_system();
+   if (!graphics_system)
+     return;
+   graphics_system->SetInterruptCallback(callback, user_data.guest_address());
+@@ -332,7 +332,7 @@ void VdInitializeRingBuffer_entry(mapped_void ptr, i32 size_log2) {
+   // r4 = log2(size)
+   // Buffer pointers are from MmAllocatePhysicalMemory with WRITE_COMBINE.
+   auto* graphics_system =
+-      static_cast<graphics::GraphicsSystem*>(REX_KERNEL_STATE()->emulator()->graphics_system());
++      REX_KERNEL_STATE()->emulator()->graphics_system();
+   if (!graphics_system)
+     return;
+   graphics_system->InitializeRingBuffer(ptr.guest_address(), size_log2);
+@@ -341,7 +341,7 @@ void VdInitializeRingBuffer_entry(mapped_void ptr, i32 size_log2) {
+ void VdEnableRingBufferRPtrWriteBack_entry(mapped_void ptr, i32 block_size_log2) {
+   // r4 = log2(block size), 6, usually --- <=19
+   auto* graphics_system =
+-      static_cast<graphics::GraphicsSystem*>(REX_KERNEL_STATE()->emulator()->graphics_system());
++      REX_KERNEL_STATE()->emulator()->graphics_system();
+   if (!graphics_system)
+     return;
+   graphics_system->EnableReadPointerWriteBack(ptr.guest_address(), block_size_log2);
+@@ -360,7 +360,7 @@ void VdSetSystemCommandBufferGpuIdentifierAddress_entry(mapped_void unk) {
+   // progress into. Leaving this a no-op means that address never changes,
+   // which is one candidate source of the WAIT_REG_MEM poll that never clears.
+   auto* graphics_system =
+-      static_cast<graphics::GraphicsSystem*>(REX_KERNEL_STATE()->emulator()->graphics_system());
++      REX_KERNEL_STATE()->emulator()->graphics_system();
+   if (!graphics_system)
+     return;
+   graphics_system->SetSystemCommandBufferGpuIdentifierAddress(unk.guest_address());
+diff --git a/src/ui/rex_app.cpp b/src/ui/rex_app.cpp
+index b3caffb..f28e5cb 100644
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -679,7 +679,7 @@ bool ReXApp::SetupPresentation() {
+   }
+   window_->Open();
+ 
+-  auto* graphics_system = static_cast<rex::graphics::GraphicsSystem*>(config_.graphics.get());
++  auto* graphics_system = config_.graphics.get();
+   if (graphics_system && graphics_system->presenter()) {
+     auto* presenter = graphics_system->presenter();
+     auto* provider = graphics_system->provider();
+@@ -744,7 +744,7 @@ bool ReXApp::SetupPresentation() {
+             debug_overlay_ = std::make_unique<ui::DebugOverlayDialog>(
+                 imgui_drawer_.get(), frame_stats_provider_, GetBuildStamp());
+           }
+-          auto* graphics_system = static_cast<rex::graphics::GraphicsSystem*>(config_.graphics.get());
++          auto* graphics_system = config_.graphics.get();
+           if (graphics_system && graphics_system->presenter()) {
+             graphics_system->presenter()->SetGuestFrameStatsEnabled(
+                 fps_overlay_ != nullptr || debug_overlay_ != nullptr);
+@@ -794,7 +794,7 @@ void ReXApp::LaunchModule() {
+ #endif
+ 
+     auto* graphics_system =
+-        static_cast<rex::graphics::GraphicsSystem*>(runtime_->graphics_system());
++        runtime_->graphics_system();
+     if (graphics_system && !runtime_->cache_root().empty()) {
+       uint32_t title_id = runtime_->kernel_state()->title_id();
+       if (title_id != 0) {

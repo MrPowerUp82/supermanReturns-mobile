@@ -107,6 +107,14 @@ class PrepareNativeRendererTests(unittest.TestCase):
         self.source.write_bytes(b'new upstream bytes\n')
         self.prepare('--verify', ok=False)
 
+    def test_crlf_patch_applies_to_lf_source(self):
+        patch = (b'diff --git a/port/src/graphics/vulkan/example.cpp b/port/src/graphics/vulkan/example.cpp\n'
+                 b'--- a/port/src/graphics/vulkan/example.cpp\n+++ b/port/src/graphics/vulkan/example.cpp\n'
+                 b'@@ -1 +1 @@\n-original\n+patched\n')
+        (self.patches / 'windows.patch').write_bytes(patch.replace(b'\n', b'\r\n'))
+        self.prepare()
+        self.assertEqual((self.output / self.source.relative_to(self.pc)).read_bytes(), b'patched\n')
+
     def test_symlink_cannot_import_files_outside_source(self):
         external = self.root / 'outside.cpp'
         external.write_bytes(b'not a PC source')

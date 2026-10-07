@@ -90,8 +90,11 @@ def prepare(source, output, manifest_path, patches_dir, verify=False):
         if patch_paths:
             git(stage, 'init', '-q')
             for patch in patch_paths:
-                git(stage, 'apply', '--check', str(patch.resolve()))
-                git(stage, 'apply', str(patch.resolve()))
+                # Patch transport line endings are not source file line endings.
+                transport = stage / '.git/native-transport.patch'
+                transport.write_bytes(patch.read_bytes().replace(b'\r\n', b'\n'))
+                git(stage, 'apply', '--check', str(transport.resolve()))
+                git(stage, 'apply', str(transport.resolve()))
             # Never leave a nested repository in the source snapshot.
             gitdir = stage / '.git'
             if gitdir.resolve().parent != stage.resolve():
