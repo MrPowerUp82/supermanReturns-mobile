@@ -75,3 +75,46 @@ diff --git a/tools/shaders/verify_vulkan_preshaders.py b/tools/shaders/verify_vu
              raise ValueError('Invalid shader result')
          at = 64
          for _ in range(2):
+diff --git a/build/vulkan-m2/emitter-tree/src/XenosRecomp/shader_common.h b/build/vulkan-m2/emitter-tree/src/XenosRecomp/shader_common.h
+--- a/build/vulkan-m2/emitter-tree/src/XenosRecomp/shader_common.h
++++ b/build/vulkan-m2/emitter-tree/src/XenosRecomp/shader_common.h
+@@ -252,7 +252,11 @@
+         return conanGamma(resourceDescriptorIndex, tfetch2DBicubic(resourceDescriptorIndex, samplerDescriptorIndex, texCoord, offset));
+ #endif
+     Texture2D<float4> texture = g_Texture2DDescriptorHeap[TEX_INDEX(resourceDescriptorIndex)];
+-    return conanGamma(resourceDescriptorIndex, texture.Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getGuestTexture2DDimensions(resourceDescriptorIndex, texture)));
++    if (samplerDescriptorIndex & SR_SAMPLER_MANUAL_FILTER)
++        return conanGamma(resourceDescriptorIndex, srFilter2DAuto(texture,
++            g_SamplerDescriptorHeap[samplerDescriptorIndex & SR_SAMPLER_INDEX_MASK],
++            texCoord + offset / getGuestTexture2DDimensions(resourceDescriptorIndex, texture), samplerDescriptorIndex));
++    return conanGamma(resourceDescriptorIndex, texture.Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex & SR_SAMPLER_INDEX_MASK], texCoord + offset / getGuestTexture2DDimensions(resourceDescriptorIndex, texture)));
+ }
+ 
+ float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
+@@ -324,7 +328,7 @@
+ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
+ {
+     Texture2D<float4> texture = g_Texture2DDescriptorHeap[TEX_INDEX(resourceDescriptorIndex)];
+-    SamplerState samplerState = g_SamplerDescriptorHeap[samplerDescriptorIndex];
++    SamplerState samplerState = g_SamplerDescriptorHeap[samplerDescriptorIndex & SR_SAMPLER_INDEX_MASK];
+     float2 dimensions = getGuestTexture2DDimensions(resourceDescriptorIndex, texture);
+     
+     float x = texCoord.x * dimensions.x + offset.x;
+@@ -355,7 +359,7 @@
+ 
+ float4 tfetch3D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord)
+ {
+-    return conanGamma(resourceDescriptorIndex, g_Texture3DDescriptorHeap[TEX_INDEX(resourceDescriptorIndex)].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord));
++    return conanGamma(resourceDescriptorIndex, g_Texture3DDescriptorHeap[TEX_INDEX(resourceDescriptorIndex)].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex & SR_SAMPLER_INDEX_MASK], texCoord));
+ }
+ 
+ struct CubeMapData
+@@ -373,7 +377,7 @@
+ 
+ float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
+ {
+-    return conanGamma(resourceDescriptorIndex, g_TextureCubeDescriptorHeap[TEX_INDEX(resourceDescriptorIndex)].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z]));
++    return conanGamma(resourceDescriptorIndex, g_TextureCubeDescriptorHeap[TEX_INDEX(resourceDescriptorIndex)].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex & SR_SAMPLER_INDEX_MASK], cubeMapData.cubeMapDirections[texCoord.z]));
+ }
+ 
+ #ifdef CONAN_RECOMP

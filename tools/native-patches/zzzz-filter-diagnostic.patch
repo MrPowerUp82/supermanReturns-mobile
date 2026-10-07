@@ -1,0 +1,12 @@
+diff --git a/port/src/graphics/vulkan/descriptor_sets.cpp b/port/src/graphics/vulkan/descriptor_sets.cpp
+--- a/port/src/graphics/vulkan/descriptor_sets.cpp
++++ b/port/src/graphics/vulkan/descriptor_sets.cpp
+@@ -117,7 +117,7 @@
+       auto features=filter_features_.find(texture->format);
+       if(features==filter_features_.end()) {VkFormatProperties properties{};c_.f.vkGetPhysicalDeviceFormatProperties(c_.physical,texture->format,&properties);features=filter_features_.emplace(texture->format,properties.optimalTilingFeatures).first;}
+       if(!(features->second&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
+-        e={"Texture filtering",VK_ERROR_FORMAT_NOT_SUPPORTED,"Guest sampler requests linear filtering of an unsupported format"};return nullptr;
++        e={"Texture filtering",VK_ERROR_FORMAT_NOT_SUPPORTED,"Guest sampler requests linear filtering of an unsupported format: format="+std::to_string(texture->format)+" slot="+std::to_string(slot)+" dimension="+std::to_string(dimension)+" extent="+std::to_string(texture->extent.width)+"x"+std::to_string(texture->extent.height)+" features="+std::to_string(features->second)+" fetch3="+std::to_string(fetch[slot][3])};return nullptr;
+       }
+     }
+   }

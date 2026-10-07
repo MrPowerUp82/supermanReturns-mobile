@@ -1,0 +1,512 @@
+diff --git a/port/src/native_renderer/native_bridge.h b/port/src/native_renderer/native_bridge.h
+--- a/port/src/native_renderer/native_bridge.h
++++ b/port/src/native_renderer/native_bridge.h
+@@ -13,6 +13,8 @@
+ 
+ #include <cstdint>
+ #include <memory>
++#include <string>
++#include <functional>
+ 
+ #ifndef SR_HAS_NATIVE
+ #define SR_HAS_NATIVE 0
+@@ -27,6 +29,15 @@
+ 
+ namespace superman_returns::native {
+ 
++#if defined(__ANDROID__)
++class NativeFrontend;
++bool ActivateNativeFrontend(NativeFrontend&,std::string&);
++void DeactivateNativeFrontend();
++NativeFrontend& ActiveFrontend();
++void SetNativeFailureHandler(std::function<void(const std::string&)>);
++[[noreturn]] void ReportNativeFailure(const std::string&);
++#endif
++
+ using GraphicsSystemFactory = std::unique_ptr<rex::system::IGraphicsSystem> (*)();
+ 
+ #if SR_HAS_NATIVE
+diff --git a/port/src/native_renderer/native_bridge_android.cpp b/port/src/native_renderer/native_bridge_android.cpp
+new file mode 100644
+--- /dev/null
++++ b/port/src/native_renderer/native_bridge_android.cpp
+@@ -0,0 +1,30 @@
++#include "native_bridge.h"
++#include "native_frontend.h"
++#include "game_profile.h"
++#include <rex/logging.h>
++#include <rex/assert.h>
++#include <atomic>
++#include <mutex>
++#include <stdexcept>
++namespace superman_returns::native {
++namespace {std::atomic<NativeFrontend*> active{nullptr};std::atomic<uint64_t> hooks{0},swaps{0};std::mutex failure_mutex;std::function<void(const std::string&)> failure_handler;}
++bool ActivateNativeFrontend(NativeFrontend& frontend,std::string& error){
++ if(!frontend.ReadyForActivation()){error="Native packet sink must be installed before activation";return false;}
++ NativeFrontend* expected=nullptr;if(!active.compare_exchange_strong(expected,&frontend)){error="Native frontend already active";return false;}return true;
++}
++void DeactivateNativeFrontend(){active.store(nullptr);}
++NativeFrontend& ActiveFrontend(){auto* frontend=active.load();if(!frontend)throw std::runtime_error("Native frontend inactive");return *frontend;}
++bool RendererActive(){return active.load()!=nullptr;}
++bool Enabled(){return RendererActive();}
++bool CaptureActive(){return RendererActive();}
++void NoteHookCall(const char*,uint32_t,uint32_t){++hooks;}
++void LogCaptureAnomalyOnce(const char* what,uint32_t value){REXLOG_WARN("native capture anomaly {} {:08X}",what,value);}
++void NoteGuestSwap(uint8_t*,uint32_t device,uint32_t){NoteGuestDevice(device);}
++void OnFrameStatsSwap(uint8_t* base,uint32_t device,uint32_t front_buffer){
++ auto* frontend=active.load();if(!frontend)return;NoteGuestSwap(base,device,front_buffer);auto swap=++swaps;
++ frontend->OnSwap(base,front_buffer,swap);
++ if(swap==1 || swap%120==0){auto count=frontend->SnapshotPacketCounters();REXLOG_INFO("renderer=pc-native-vulkan frame={} hooks={} packets={} draws={} resolves={} swaps={} errors={}",swap,hooks.load(),count.packets,count.draws,count.resolves,count.swaps,count.errors);}
++}
++void SetNativeFailureHandler(std::function<void(const std::string&)> handler){std::lock_guard lock(failure_mutex);failure_handler=std::move(handler);}
++[[noreturn]] void ReportNativeFailure(const std::string& reason){DeactivateNativeFrontend();std::function<void(const std::string&)> handler;{std::lock_guard lock(failure_mutex);handler=failure_handler;}if(handler)handler(reason);rex::FatalError("Superman native Vulkan: "+reason);}
++}
+diff --git a/port/src/native_renderer/native_frontend_android.cpp b/port/src/native_renderer/native_frontend_android.cpp
+--- a/port/src/native_renderer/native_frontend_android.cpp
++++ b/port/src/native_renderer/native_frontend_android.cpp
+@@ -1156,6 +1156,8 @@
+ 
+ NativeFrontend& NativeFrontend::Get() {static NativeFrontend frontend;return frontend;}
+ NativeFrontend::~NativeFrontend(){ShutdownWorker();}
++bool NativeFrontend::ReadyForActivation(){std::lock_guard lock(front_mutex_);return bool(packet_sink_) && !worker_stop_;}
++void NativeFrontend::SetFailureHandler(std::function<void(const std::string&)> handler){std::lock_guard lock(front_mutex_);if(worker_.joinable())throw std::runtime_error("Failure handler must be set before capture starts");failure_handler_=std::move(handler);}
+ bool NativeFrontend::InstallPacketSink(PacketSink sink,std::function<void()> cancel) {
+   std::lock_guard lock(front_mutex_);
+   if(!sink || worker_stop_ || packet_sink_) return false;
+@@ -1201,10 +1203,10 @@
+   graphics::guest::RenderPacket packet;std::string error;
+   bool ok=graphics::guest::ReplayCapturedRenderPacket(batch,cmd,mirror_,packet,error);
+   if(ok) {
+-    ++stats_.packets_decoded;
+-    if(std::holds_alternative<graphics::guest::DrawPacket>(packet))++stats_.draws;
+-    if(std::holds_alternative<graphics::guest::ResolvePacket>(packet))++stats_.resolves;
+-    if(std::holds_alternative<graphics::guest::SwapPacket>(packet))++stats_.packet_swaps;
++    ++stats_.packets_decoded;++packet_count_;
++    if(std::holds_alternative<graphics::guest::DrawPacket>(packet)){++stats_.draws;++draw_count_;}
++    if(std::holds_alternative<graphics::guest::ResolvePacket>(packet)){++stats_.resolves;++resolve_count_;}
++    if(std::holds_alternative<graphics::guest::SwapPacket>(packet)){++stats_.packet_swaps;++swap_count_;}
+     ok=packet_sink_(std::move(packet),error);
+   }
+   if(!ok) throw std::runtime_error(error.empty()?"Native render packet rejected":error);
+@@ -1220,8 +1222,9 @@
+     }
+     try {for(const auto& cmd:batch->cmds){if(worker_stop_)return;Execute(nullptr,*batch,cmd);}}
+     catch(const std::exception& error) {
+-      std::lock_guard lock(queue_mutex_);worker_error_=error.what();packet_sink_failed_=true;
+-      worker_stop_=true;++stats_.packet_errors;done_cv_.notify_all();queue_cv_.notify_all();return;
++      {std::lock_guard lock(queue_mutex_);worker_error_=error.what();packet_sink_failed_=true;worker_stop_=true;++stats_.packet_errors;++error_count_;}
++      done_cv_.notify_all();queue_cv_.notify_all();
++      if(failure_handler_)failure_handler_(error.what());return;
+     }
+     batch->Clear();
+     {
+diff --git a/port/src/native_renderer/native_frontend_android.h b/port/src/native_renderer/native_frontend_android.h
+--- a/port/src/native_renderer/native_frontend_android.h
++++ b/port/src/native_renderer/native_frontend_android.h
+@@ -20,6 +20,7 @@
+ namespace superman_returns::native {
+ extern int g_current_pass,g_guest_pass;
+ void NoteGuestDevice(uint32_t dev);
++bool Enabled();
+ struct CapturedTextureEntry {
+   std::shared_ptr<const graphics::guest::TextureCapture> snapshot;
+   uint64_t content_hash=0, checked_frame=~0ull;
+@@ -39,14 +40,19 @@
+ public:
+   using PacketSink=std::function<bool(graphics::guest::RenderPacket&&,std::string&)>;
+   NativeFrontend()=default;
+-  ~NativeFrontend();
++  virtual ~NativeFrontend();
+   static NativeFrontend& Get();
+   bool InstallPacketSink(PacketSink,std::function<void()>);
+   bool SubmitCapturedBatch(std::unique_ptr<graphics::guest::WorkBatch>,std::string&);
+   bool Drain(std::string&);
+   void ShutdownWorker();
++  bool ReadyForActivation();
++  void SetFailureHandler(std::function<void(const std::string&)> handler);
++  struct PacketCounters {uint64_t packets,draws,resolves,swaps,errors;};
++  PacketCounters SnapshotPacketCounters() const {return {packet_count_.load(),draw_count_.load(),resolve_count_.load(),swap_count_.load(),error_count_.load()};}
++
+   // --- Guest D3D entry points -------------------------------------------
+-  void OnSwap(uint8_t* base, uint32_t front_buffer_texture, uint64_t swap_number = 0);
++  virtual void OnSwap(uint8_t* base, uint32_t front_buffer_texture, uint64_t swap_number = 0);
+   // BeginVertices/EndVertices or DrawVerticesUP (vertex data at `data`).
+   void DrawInlineVertices(uint8_t* base, uint32_t prim, uint32_t data, uint32_t vertex_count,
+                           uint32_t stride);
+@@ -158,6 +164,8 @@
+   void WaitWorkerIdle(uint64_t batches);
+   bool worker_mode_ = false;
+   bool worker_mode_checked_ = false;
++  std::atomic<uint64_t> packet_count_{0},draw_count_{0},resolve_count_{0},swap_count_{0},error_count_{0};
++  std::function<void(const std::string&)> failure_handler_;
+   PacketSink packet_sink_;std::function<void()> cancel_packet_sink_;
+   bool packet_sink_failed_=false;
+   std::atomic<bool> worker_stop_{false};
+diff --git a/port/src/native_renderer/native_graphics_system_vulkan.cpp b/port/src/native_renderer/native_graphics_system_vulkan.cpp
+new file mode 100644
+--- /dev/null
++++ b/port/src/native_renderer/native_graphics_system_vulkan.cpp
+@@ -0,0 +1,13 @@
++#include "native_graphics_system_vulkan.h"
++#include "native_bridge.h"
++#include "native_frontend.h"
++#include <rex/logging.h>
++namespace superman_returns::native {using rex::X_STATUS;
++VulkanNativeGraphicsSystem::~VulkanNativeGraphicsSystem(){Shutdown();}
++rex::X_STATUS VulkanNativeGraphicsSystem::SetupPresentation(rex::ui::WindowedAppContext* context){
++ if(has_presentation())return X_STATUS_SUCCESS;
++ auto status=NativeCommandSystem::SetupPresentation(context);if(XFAILED(status))return status;
++ std::string error;if(!ActivateNativeFrontend(NativeFrontend::Get(),error)){REXLOG_ERROR("native Vulkan activation failed: {}",error);NativeCommandSystem::Shutdown();return X_STATUS_UNSUCCESSFUL;}return status;
++}
++void VulkanNativeGraphicsSystem::Shutdown(){DeactivateNativeFrontend();NativeCommandSystem::Shutdown();}
++}
+diff --git a/port/src/native_renderer/native_graphics_system_vulkan.h b/port/src/native_renderer/native_graphics_system_vulkan.h
+--- a/port/src/native_renderer/native_graphics_system_vulkan.h
++++ b/port/src/native_renderer/native_graphics_system_vulkan.h
+@@ -1,5 +1,9 @@
+ #pragma once
+ #include "native_command_system.h"
+ namespace superman_returns::native {
+-class VulkanNativeGraphicsSystem final:public NativeCommandSystem {public: explicit VulkanNativeGraphicsSystem(ProviderFactory factory):NativeCommandSystem(std::move(factory)) {}};
++class VulkanNativeGraphicsSystem final:public NativeCommandSystem {public: explicit VulkanNativeGraphicsSystem(ProviderFactory factory):NativeCommandSystem(std::move(factory)) {}
++~VulkanNativeGraphicsSystem() override;
++rex::X_STATUS SetupPresentation(rex::ui::WindowedAppContext*) override;
++void Shutdown() override;
++};
+ }
+diff --git a/port/src/native_renderer/native_hooks.cpp b/port/src/native_renderer/native_hooks.cpp
+--- a/port/src/native_renderer/native_hooks.cpp
++++ b/port/src/native_renderer/native_hooks.cpp
+@@ -28,7 +28,11 @@
+ #include "game_profile.h"
+ #include "hang_watchdog.h"
+ #include "native_bridge.h"
++#if defined(__ANDROID__)
++#include "native_graphics_system_vulkan.h"
++#else
+ #include "native_graphics_system.h"
++#endif
+ #include "native_renderer.h"
+ #include "sdk_compat.h"
+ 
+@@ -74,64 +78,64 @@
+ 
+ #if SR_HOOK_ENABLED(DRAW_VERTICES)
+ // D3DDevice_DrawVertices(dev, PrimType, StartVertex, VertexCount)
+-SR_DEFINE_HOOK(SR_ADDR_DRAW_VERTICES) {
++SR_DEFINE_HOOK(SR_ADDR_DRAW_VERTICES) try {
+   const uint32_t dev = ctx.r3.u32, prim = ctx.r4.u32, start = ctx.r5.u32, count = ctx.r6.u32;
+   OnDeviceCall("DrawVertices", dev, prim);
+   SR_ORIGINAL(SR_ADDR_DRAW_VERTICES)(ctx, base);
+-  if (native::Enabled()) native::Renderer::Get().DrawVertices(base, prim, start, count);
+-}
++  if (native::Enabled()) native::ActiveFrontend().DrawVertices(base, prim, start, count);
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(DRAW_INDEXED_VERTICES)
+ // D3DDevice_DrawIndexedVertices(dev, PrimType, BaseVertexIndex, StartIndex, IndexCount)
+-SR_DEFINE_HOOK(SR_ADDR_DRAW_INDEXED_VERTICES) {
++SR_DEFINE_HOOK(SR_ADDR_DRAW_INDEXED_VERTICES) try {
+   const uint32_t dev = ctx.r3.u32, prim = ctx.r4.u32, base_vertex = ctx.r5.u32,
+                  start = ctx.r6.u32, count = ctx.r7.u32;
+   OnDeviceCall("DrawIndexedVertices", dev, prim);
+   SR_ORIGINAL(SR_ADDR_DRAW_INDEXED_VERTICES)(ctx, base);
+   if (native::Enabled()) {
+-    native::Renderer::Get().DrawIndexedVertices(base, prim, int32_t(base_vertex), start, count);
+-  }
+-}
++    native::ActiveFrontend().DrawIndexedVertices(base, prim, int32_t(base_vertex), start, count);
++  }
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(DRAW_VERTICES_UP)
+ // D3DDevice_DrawVerticesUP(dev, PrimType, VertexCount, pVertexData, Stride) - Begin/End based.
+-SR_DEFINE_HOOK(SR_ADDR_DRAW_VERTICES_UP) {
++SR_DEFINE_HOOK(SR_ADDR_DRAW_VERTICES_UP) try {
+   const uint32_t dev = ctx.r3.u32, prim = ctx.r4.u32, count = ctx.r5.u32, data = ctx.r6.u32,
+                  stride = ctx.r7.u32;
+   OnDeviceCall("DrawVerticesUP", dev, prim);
+   t_in_draw_up = true;
+   SR_ORIGINAL(SR_ADDR_DRAW_VERTICES_UP)(ctx, base);
+   t_in_draw_up = false;
+-  if (native::Enabled()) native::Renderer::Get().DrawInlineVertices(base, prim, data, count, stride);
+-}
++  if (native::Enabled()) native::ActiveFrontend().DrawInlineVertices(base, prim, data, count, stride);
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(BEGIN_VERTICES)
+ // D3DDevice_BeginVertices(dev, PrimType, VertexCount, Stride) -> r3 = where the
+ // game writes the inline vertices (inside the command segment).
+-SR_DEFINE_HOOK(SR_ADDR_BEGIN_VERTICES) {
++SR_DEFINE_HOOK(SR_ADDR_BEGIN_VERTICES) try {
+   const uint32_t dev = ctx.r3.u32, prim = ctx.r4.u32, count = ctx.r5.u32, stride = ctx.r6.u32;
+   if (!t_in_draw_up) OnDeviceCall("BeginVertices", dev, prim);
+   SR_ORIGINAL(SR_ADDR_BEGIN_VERTICES)(ctx, base);
+   if (native::Enabled() && !t_in_draw_up) {
+     g_pending_inline = {true, prim, count, stride, ctx.r3.u32};
+   }
+-}
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(END_VERTICES)
+ // D3DDevice_EndVertices(dev): the inline vertex data is complete here.
+-SR_DEFINE_HOOK(SR_ADDR_END_VERTICES) {
++SR_DEFINE_HOOK(SR_ADDR_END_VERTICES) try {
+   native::NoteHookCall("EndVertices", ctx.r3.u32, 0);
+   if (g_pending_inline.active) {
+     g_pending_inline.active = false;
+-    native::Renderer::Get().DrawInlineVertices(base, g_pending_inline.prim, g_pending_inline.data,
++    native::ActiveFrontend().DrawInlineVertices(base, g_pending_inline.prim, g_pending_inline.data,
+                                                g_pending_inline.count, g_pending_inline.stride);
+   }
+   SR_ORIGINAL(SR_ADDR_END_VERTICES)(ctx, base);
+-}
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ // ---- Resolve, tiling, clear ----------------------------------------------------
+@@ -139,7 +143,7 @@
+ #if SR_HOOK_ENABLED(RESOLVE)
+ // D3DDevice_Resolve(dev, Flags, pSrcRect, pDestTexture, pDestPoint, Level,
+ // Slice, pClearColor, ClearZ, ClearStencil, pParameters)
+-SR_DEFINE_HOOK(SR_ADDR_RESOLVE) {
++SR_DEFINE_HOOK(SR_ADDR_RESOLVE) try {
+   const uint32_t dev = ctx.r3.u32, flags = ctx.r4.u32, rect = ctx.r5.u32, dest = ctx.r6.u32,
+                  point = ctx.r7.u32, clear_color = ctx.r10.u32;
+   const float clear_z = float(ctx.f1.f64);
+@@ -152,36 +156,36 @@
+   // stream the PM4 mirror parses.
+   SR_ORIGINAL(SR_ADDR_RESOLVE)(ctx, base);
+   if (native::Enabled()) {
+-    native::Renderer::Get().Resolve(base, flags, rect, dest, point, clear_color, clear_z, clear_stencil,level,slice);
+-  }
+-}
++    native::ActiveFrontend().Resolve(base, flags, rect, dest, point, clear_color, clear_z, clear_stencil,level,slice);
++  }
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(BEGIN_TILING)
+ // D3DDevice_BeginTiling(dev, Flags, Count, pTileRects, pClearColor, ClearZ, ClearStencil)
+-SR_DEFINE_HOOK(SR_ADDR_BEGIN_TILING) {
++SR_DEFINE_HOOK(SR_ADDR_BEGIN_TILING) try {
+   OnDeviceCall("BeginTiling", ctx.r3.u32, ctx.r5.u32);
+   if (native::Enabled()) {
+-    native::Renderer::Get().BeginTiling(base, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32,
++    native::ActiveFrontend().BeginTiling(base, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32,
+                                         float(ctx.f1.f64), ctx.r8.u32);
+   }
+   SR_ORIGINAL(SR_ADDR_BEGIN_TILING)(ctx, base);
+-}
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(END_TILING)
+ // D3DDevice_EndTiling: its per-tile resolves go through the Resolve hook.
+-SR_DEFINE_HOOK(SR_ADDR_END_TILING) {
++SR_DEFINE_HOOK(SR_ADDR_END_TILING) try {
+   OnDeviceCall("EndTiling", ctx.r3.u32, 0);
+   SR_ORIGINAL(SR_ADDR_END_TILING)(ctx, base);
+-  if (native::Enabled()) native::Renderer::Get().EndTiling();
+-}
++  if (native::Enabled()) native::ActiveFrontend().EndTiling();
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(CLEAR)
+ // The shared float4 clear entry also catches direct engine calls that bypass
+ // the public D3DCOLOR wrapper. A null rectangle clears the whole surface.
+-SR_DEFINE_HOOK(SR_ADDR_CLEAR) {
++SR_DEFINE_HOOK(SR_ADDR_CLEAR) try {
+   const uint32_t dev = ctx.r3.u32, flags = ctx.r4.u32, rect = ctx.r5.u32,
+                  color_ptr = ctx.r6.u32, stencil = ctx.r8.u32;
+   float color[4] = {};
+@@ -195,9 +199,9 @@
+   OnDeviceCall("Clear", dev, flags);
+   SR_ORIGINAL(SR_ADDR_CLEAR)(ctx, base);
+   if (native::Enabled()) {
+-    native::Renderer::Get().Clear(base, rect ? 1u : 0u, rect, flags, color, z, stencil);
+-  }
+-}
++    native::ActiveFrontend().Clear(base, rect ? 1u : 0u, rect, flags, color, z, stencil);
++  }
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ // ---- Command segment, constants, buffers ---------------------------------------
+@@ -205,67 +209,67 @@
+ #if SR_HOOK_ENABLED(RING_MAKE_SPACE)
+ // XDK command segment switch (segment full / kickoff): the PM4 mirror parses
+ // the tail of the old segment and resynchronizes on the new one.
+-SR_DEFINE_HOOK(SR_ADDR_RING_MAKE_SPACE) {
++SR_DEFINE_HOOK(SR_ADDR_RING_MAKE_SPACE) try {
+   const uint32_t dev = ctx.r3.u32;
+   OnDeviceCall("RingMakeSpace", dev, 0);
+-  if (native::Enabled()) native::Renderer::Get().SyncRing(base, dev);
++  if (native::Enabled()) native::ActiveFrontend().SyncRing(base, dev);
+   SR_ORIGINAL(SR_ADDR_RING_MAKE_SPACE)(ctx, base);
+-  if (native::Enabled()) native::Renderer::Get().ResyncRing(base, dev);
+-}
++  if (native::Enabled()) native::ActiveFrontend().ResyncRing(base, dev);
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(RING_ALLOC_LARGE)
+ // Large command segment allocation (after the segment switch could not satisfy it).
+-SR_DEFINE_HOOK(SR_ADDR_RING_ALLOC_LARGE) {
++SR_DEFINE_HOOK(SR_ADDR_RING_ALLOC_LARGE) try {
+   const uint32_t dev = ctx.r3.u32;
+   OnDeviceCall("RingAllocLarge", dev, 0);
+-  if (native::Enabled()) native::Renderer::Get().SyncRing(base, dev);
++  if (native::Enabled()) native::ActiveFrontend().SyncRing(base, dev);
+   SR_ORIGINAL(SR_ADDR_RING_ALLOC_LARGE)(ctx, base);
+-  if (native::Enabled()) native::Renderer::Get().ResyncRing(base, dev);
+-}
++  if (native::Enabled()) native::ActiveFrontend().ResyncRing(base, dev);
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(RESERVE_INLINE_CONSTANTS)
+ // Inline shader constant upload: (dev, r4, r5, vec4_count) reserves a PM4
+ // SET_CONSTANT packet in the ring and returns the data pointer the game
+ // fills. The ALU register is ((r5 - (r4 << 8)) * 4) & 0x7FC dwords.
+-SR_DEFINE_HOOK(SR_ADDR_RESERVE_INLINE_CONSTANTS) {
++SR_DEFINE_HOOK(SR_ADDR_RESERVE_INLINE_CONSTANTS) try {
+   const uint32_t r4 = ctx.r4.u32, r5 = ctx.r5.u32, count = ctx.r6.u32;
+   OnDeviceCall("ReserveInlineConstants", ctx.r3.u32, count);
+   SR_ORIGINAL(SR_ADDR_RESERVE_INLINE_CONSTANTS)(ctx, base);
+   if (native::Enabled() && ctx.r3.u32) {
+     const uint32_t unified = (r5 - (r4 << 8)) & 0x1FF;
+-    native::Renderer::Get().NoteRingConstants(unified >= 256, unified & 0xFF, count, ctx.r3.u32);
+-  }
+-}
++    native::ActiveFrontend().NoteRingConstants(unified >= 256, unified & 0xFF, count, ctx.r3.u32);
++  }
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(LOAD_SHADER_LITERALS)
+ // Shader literal constants: at shader bind the XDK emits LOAD_ALU_CONSTANT
+ // packets from the shader object; (dev, table, data_base) walks
+ // {u16 vec4 register, u16 dword count, u32 offset} entries.
+-SR_DEFINE_HOOK(SR_ADDR_LOAD_SHADER_LITERALS) {
++SR_DEFINE_HOOK(SR_ADDR_LOAD_SHADER_LITERALS) try {
+   OnDeviceCall("LoadShaderLiterals", ctx.r3.u32, ctx.r4.u32);
+   if (native::Enabled()) {
+-    native::Renderer::Get().ApplyLoadAluConstants(base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
++    native::ActiveFrontend().ApplyLoadAluConstants(base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
+   }
+   SR_ORIGINAL(SR_ADDR_LOAD_SHADER_LITERALS)(ctx, base);
+-}
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(GPU_BEGIN_SHADER_CONSTANT_F4)
+ // D3DDevice_GpuBeginShaderConstantF4(dev, bPixelShader, StartRegister,
+ //   ppCachedConstants, ppWriteCombinedConstants, Vector4fCount): the game
+ // writes constants through the returned ring pointer only.
+-SR_DEFINE_HOOK(SR_ADDR_GPU_BEGIN_SHADER_CONSTANT_F4) {
++SR_DEFINE_HOOK(SR_ADDR_GPU_BEGIN_SHADER_CONSTANT_F4) try {
+   const bool pixel = ctx.r4.u32 != 0;
+   const uint32_t start = ctx.r5.u32, ring_out = ctx.r7.u32, count = ctx.r8.u32;
+   OnDeviceCall("GpuBeginShaderConstantF4", ctx.r3.u32, count);
+   SR_ORIGINAL(SR_ADDR_GPU_BEGIN_SHADER_CONSTANT_F4)(ctx, base);
+   if (native::Enabled() && ring_out) {
+-    native::Renderer::Get().NoteRingConstants(pixel, start, count, GuestLoad32(base, ring_out));
+-  }
+-}
++    native::ActiveFrontend().NoteRingConstants(pixel, start, count, GuestLoad32(base, ring_out));
++  }
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ // D3DVertexBuffer_Unlock / D3DIndexBuffer_Unlock (r3 = buffer object): the
+@@ -274,25 +278,25 @@
+   if (!object || !native::Enabled()) return;
+   const uint32_t address = GuestLoad32(base, object + 0x18) & ~3u;
+   const uint32_t size = GuestLoad32(base, object + 0x1C) & 0x00FFFFFFu;
+-  native::Renderer::Get().InvalidateGuestRange(address, size ? size : 0x10000);
++  native::ActiveFrontend().InvalidateGuestRange(address, size ? size : 0x10000);
+ }
+ 
+ #if SR_HOOK_ENABLED(VERTEX_BUFFER_UNLOCK)
+-SR_DEFINE_HOOK(SR_ADDR_VERTEX_BUFFER_UNLOCK) {
++SR_DEFINE_HOOK(SR_ADDR_VERTEX_BUFFER_UNLOCK) try {
+   const uint32_t object = ctx.r3.u32;
+   native::NoteHookCall("VertexBufferUnlock", object, 0);
+   SR_ORIGINAL(SR_ADDR_VERTEX_BUFFER_UNLOCK)(ctx, base);
+   InvalidateBufferObject(base, object);
+-}
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(INDEX_BUFFER_UNLOCK)
+-SR_DEFINE_HOOK(SR_ADDR_INDEX_BUFFER_UNLOCK) {
++SR_DEFINE_HOOK(SR_ADDR_INDEX_BUFFER_UNLOCK) try {
+   const uint32_t object = ctx.r3.u32;
+   native::NoteHookCall("IndexBufferUnlock", object, 0);
+   SR_ORIGINAL(SR_ADDR_INDEX_BUFFER_UNLOCK)(ctx, base);
+   InvalidateBufferObject(base, object);
+-}
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ // ---- Frame boundary and GPU waits ----------------------------------------------
+@@ -302,17 +306,17 @@
+ // frame_stats.cpp already hooks. The original still runs so the guest's
+ // swap/vblank/fence semantics are untouched; the native frame is presented
+ // right after.
+-SR_DEFINE_HOOK(SR_ADDR_SWAP) {
++SR_DEFINE_HOOK(SR_ADDR_SWAP) try {
+   const uint32_t dev = ctx.r3.u32, front_buffer = ctx.r4.u32;
+   static uint64_t swap_number = 0;
+   ++swap_number;
+   SR_ORIGINAL(SR_ADDR_SWAP)(ctx, base);
+   native::NoteGuestSwap(base, dev, front_buffer);
+   if (native::Enabled()) {
+-    native::HangWatchdogBeat();
+-    native::Renderer::Get().OnSwap(base, front_buffer, swap_number);
+-  }
+-}
++
++    native::ActiveFrontend().OnSwap(base, front_buffer, swap_number);
++  }
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ // XDK GPU waits. BlockOnFence (r3 = device, r4 = fence) loops calling the poll
+@@ -325,7 +329,7 @@
+ // progress (elsewhere), 1 ms cap either way so the hang detector still runs.
+ // Under Xenos (xenos / A/B mode) both waits are no-ops: the spin is unchanged.
+ #if SR_HOOK_ENABLED(BLOCK_ON_FENCE)
+-SR_DEFINE_HOOK(SR_ADDR_BLOCK_ON_FENCE) {
++SR_DEFINE_HOOK(SR_ADDR_BLOCK_ON_FENCE) try {
+   const uint32_t saved_dev = t_fence_dev, saved_value = t_fence_value;
+   t_fence_dev = ctx.r3.u32;
+   t_fence_value = ctx.r4.u32;
+@@ -333,11 +337,11 @@
+   SR_ORIGINAL(SR_ADDR_BLOCK_ON_FENCE)(ctx, base);
+   t_fence_dev = saved_dev;
+   t_fence_value = saved_value;
+-}
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
+ #endif
+ 
+ #if SR_HOOK_ENABLED(POLL_GPU_PROGRESS)
+-SR_DEFINE_HOOK(SR_ADDR_POLL_GPU_PROGRESS) {
++SR_DEFINE_HOOK(SR_ADDR_POLL_GPU_PROGRESS) try {
+   const uint64_t generation = native::GpuProgressGeneration();
+   native::NoteHookCall("PollGpuProgress", ctx.r3.u32, 0);
+   SR_ORIGINAL(SR_ADDR_POLL_GPU_PROGRESS)(ctx, base);
+@@ -356,5 +360,5 @@
+   } else {
+     native::WaitForGpuProgress(generation, 1000);
+   }
+-}
+-#endif
++} catch(const std::exception& error){native::ReportNativeFailure(error.what());}
++#endif

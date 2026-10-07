@@ -1,0 +1,52 @@
+diff --git a/port/src/native_renderer/native_command_system.h b/port/src/native_renderer/native_command_system.h
+--- a/port/src/native_renderer/native_command_system.h
++++ b/port/src/native_renderer/native_command_system.h
+@@ -68,6 +68,7 @@
+   void SetSystemCommandBufferGpuIdentifierAddress(uint32_t ptr) override;
+   void InitializeCommandMemory(rex::memory::Memory&);
+   bool ConsumeRing(uint32_t write_index);
++  void ProcessPendingRing(uint32_t write_index);
+   void SetPaused(bool paused);
+   void TickVblank();
+   void SetInterruptDispatcher(std::function<void(uint32_t,uint32_t,uint32_t,uint32_t)> callback){interrupt_dispatcher_=std::move(callback);}
+diff --git a/port/src/native_renderer/native_command_system.cpp b/port/src/native_renderer/native_command_system.cpp
+--- a/port/src/native_renderer/native_command_system.cpp
++++ b/port/src/native_renderer/native_command_system.cpp
+@@ -14,6 +14,7 @@
+ 
+ #include "native_command_system.h"
+ #include "guest_reads_android.h"
++#include "native_bridge.h"
+ #include <thread>
+ 
+ #include <algorithm>
+@@ -364,7 +365,7 @@
+       }
+     }
+     if(paused_) {rex::thread::Wait(write_event_.get(),false,std::chrono::milliseconds(2));continue;}
+-    if(!ConsumeRing(write_index)) {running_=false;SignalGpuProgress();REXLOG_ERROR("native graphics: command processor stopped on invalid packet");}
++    ProcessPendingRing(write_index);
+   }
+ }
+ 
+@@ -376,8 +377,19 @@
+ void NativeCommandSystem::SetSystemCommandBufferGpuIdentifierAddress(uint32_t address){identifier_address_=address;}
+ void NativeCommandSystem::SetPaused(bool paused){paused_=paused;cp_wake_->Set();write_event_->Set();SignalGpuProgress();}
+ void NativeCommandSystem::TickVblank(){if(!running_ || paused_)return;counter_.fetch_add(1);cp_wake_->Set();DispatchInterrupt(0,2);}
++void NativeCommandSystem::ProcessPendingRing(uint32_t write_index) {
++  std::string failure;
++  try {
++    if(!ConsumeRing(write_index) && running_) failure="Invalid native PM4 ring packet";
++  } catch(const std::exception& error) {
++    if(running_) failure=error.what();
++  }
++  if(!failure.empty()) ReportNativeFailure(failure);
++}
+ bool NativeCommandSystem::ConsumeRing(uint32_t write_index) {
+-  if(!running_ || paused_ || !ring_dwords_)return false;
++  if(!running_)return false;
++  if(paused_)return true;
++  if(!ring_dwords_)return false;
+   write_index %= ring_dwords_;
+   Reader reader;
+   reader.base = PhysicalBytes(ring_base_,size_t(ring_dwords_)*4);

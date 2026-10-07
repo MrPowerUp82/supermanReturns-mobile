@@ -48,7 +48,7 @@ target_link_libraries(test_native_commands PRIVATE native_packet_capture sr_runt
 target_include_directories(test_native_commands PRIVATE "${SR_PC}/native_renderer")
 target_link_options(test_native_commands PRIVATE -Wl,--gc-sections)
 set(SR_VULKAN_HEADERS "${SR_SDK}/thirdparty/vulkan-headers/include" CACHE PATH "Pinned Vulkan headers" FORCE)
-set(SR_VULKAN_DXC "C:/Users/webpa/OneDrive/Documentos/projetos/superman_returns_recomp/.tools/dxc/bin/x64/dxc.exe" CACHE FILEPATH "Host shader compiler")
+set(SR_VULKAN_DXC "${SR_ROOT}/../superman_returns_recomp/.tools/dxc/bin/x64/dxc.exe" CACHE FILEPATH "Host shader compiler")
 add_subdirectory("${SR_PC}/graphics/vulkan" vulkan-core)
 add_executable(test_native_provider "${SR_ROOT}/tests/native/test_native_provider.cpp" "${SR_PC}/graphics/vulkan/platform/android_provider.cpp" "${SR_ROOT}/tests/native/runtime_test_support.cpp")
 target_include_directories(test_native_provider PRIVATE "${SR_PC}/native_renderer")
@@ -90,3 +90,31 @@ add_executable(test_native_bootstrap $<TARGET_OBJECTS:test_native_bootstrap_obje
 target_include_directories(test_native_bootstrap PRIVATE "${SR_ROOT}/native/game" "${SR_PC}/native_renderer")
 target_link_libraries(test_native_bootstrap PRIVATE sr_vulkan_core native_packet_capture sr_runtime android log)
 target_link_options(test_native_bootstrap PRIVATE -Wl,--gc-sections)
+
+add_executable(test_float_filter_gpu "${SR_ROOT}/tests/native/test_float_filter_gpu.cpp")
+target_link_libraries(test_float_filter_gpu PRIVATE sr_vulkan_core)
+add_executable(test_texture_filter "${SR_ROOT}/tests/native/test_texture_filter.cpp")
+target_link_libraries(test_texture_filter PRIVATE sr_vulkan_core)
+set(SR_FILTER_PROBE "${CMAKE_CURRENT_BINARY_DIR}/float_filter_probe.spv")
+add_custom_command(OUTPUT "${SR_FILTER_PROBE}"
+ COMMAND "${SR_VULKAN_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E CSMain
+ -I "${SR_ROOT}/native/shaders" -Fo "${SR_FILTER_PROBE}"
+ "${SR_ROOT}/tests/native/shaders/float_filter_probe.hlsl"
+ DEPENDS "${SR_ROOT}/native/shaders/float_filter.hlsl" "${SR_ROOT}/tests/native/shaders/float_filter_probe.hlsl"
+ VERBATIM)
+add_custom_target(filter_probe_shader DEPENDS "${SR_FILTER_PROBE}")
+foreach(stage IN ITEMS vs ps)
+ if(stage STREQUAL "vs")
+  set(filter_entry VSMain)
+ else()
+  set(filter_entry PSMain)
+ endif()
+ set(probe "${CMAKE_CURRENT_BINARY_DIR}/float_filter_probe.${stage}.spv")
+ add_custom_command(OUTPUT "${probe}"
+  COMMAND "${SR_VULKAN_DXC}" -spirv -fspv-target-env=vulkan1.1 -T ${stage}_6_0 -E ${filter_entry}
+  -I "${SR_ROOT}/native/shaders" -Fo "${probe}"
+  "${SR_ROOT}/tests/native/shaders/float_filter_probe.hlsl"
+  DEPENDS "${SR_ROOT}/native/shaders/float_filter.hlsl" "${SR_ROOT}/tests/native/shaders/float_filter_probe.hlsl"
+  VERBATIM)
+ add_custom_target(filter_probe_${stage} DEPENDS "${probe}")
+endforeach()

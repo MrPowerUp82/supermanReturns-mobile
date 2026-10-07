@@ -15,6 +15,10 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.util.Arrays;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 public final class LauncherActivity extends Activity {
     private static final int PICK_ISO=7, GOLD=0xffe8b350, MUTED=0xffa8b9cc, WHITE=0xfff4f5f7;
@@ -22,6 +26,7 @@ public final class LauncherActivity extends Activity {
     private TextView status, gpu;
     private Button select, cancel, diagnostic,play;
     private ProgressBar progress;
+    private String nativeFailure="";
     private final InstallController.Listener listener=this::render;
 
     @Override public void onCreate(Bundle state) {
@@ -76,14 +81,25 @@ public final class LauncherActivity extends Activity {
             runOnUiThread(() -> { if(!isDestroyed()) { gpu.setText(message); diagnostic.setEnabled(Arrays.asList(Build.SUPPORTED_ABIS).contains("arm64-v8a") && !message.startsWith("ERRO:")); } });
         },"vulkan-probe").start();
     }
-    @Override protected void onStart() { super.onStart(); installer.attach(listener); }
+    @Override protected void onStart() {
+        super.onStart();
+        nativeFailure="";
+        File error=new File(getFilesDir(),"native-error.txt");
+        if(error.isFile()) {
+            try(FileInputStream input=new FileInputStream(error)) {
+                nativeFailure="\n\nRenderer nativo Vulkan interrompido:\n"+
+                    new String(input.readNBytes(4096),StandardCharsets.UTF_8).trim();
+            } catch(IOException e) { nativeFailure="\n\nNão foi possível ler o diagnóstico do renderer."; }
+        }
+        installer.attach(listener);
+    }
     @Override protected void onStop() { installer.detach(listener); super.onStop(); }
     @Override protected void onActivityResult(int request,int result,Intent data) {
         super.onActivityResult(request,result,data);
         if(request==PICK_ISO && result==RESULT_OK && data!=null && data.getData()!=null) installer.install(data.getData());
     }
     private void render(InstallController.State state) {
-        status.setText((state.installed()?"✓ Instalação preservada\n":"") + state.message());
+        status.setText((state.installed()?"✓ Instalação preservada\n":"") + state.message()+nativeFailure);
         select.setEnabled(!state.busy()); cancel.setVisibility(state.busy()?View.VISIBLE:View.GONE);
         play.setEnabled(BuildConfig.HAS_GAME_RUNTIME && state.installed() && !state.busy());
         progress.setVisibility(state.busy()?View.VISIBLE:View.GONE);

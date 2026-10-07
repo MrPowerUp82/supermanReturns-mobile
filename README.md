@@ -5,7 +5,7 @@ Port Android experimental de Superman Returns (Xbox 360), com alvo inicial no
 na arquitetura Android do [Skate3-Mobile](https://github.com/Buku313/Skate3-Mobile).
 
 O projeto inclui um alvo experimental de gameplay com o runtime ReXGlue Android,
-backend Vulkan Xbox 360, áudio XMA e controles touch. É preciso compilar esse
+renderer nativo Vulkan do projeto PC, áudio XMA e controles touch. É preciso compilar esse
 alvo antes do APK para incluir o jogo recompilado; sem ele, o APK oferece apenas
 instalador e diagnóstico. Boot e gameplay precisam de validação no aparelho.
 
@@ -67,6 +67,12 @@ $env:ANDROID_HOME = 'C:\caminho\android-sdk'
 
 O build gera um APK assinado com a chave **debug local**. Não é uma release
 assinada para publicação. O script executa `assembleDebug` e `lintDebug`.
+Se a chave do app já instalado não estiver disponível, use
+`tools/build.ps1 -NativeSideBySide`: gera `superman-returns-native-vulkan-0.1.0-dev.apk`
+como **Superman Returns Nativo**, pacote `org.supermanreturns.mobile.native`.
+Esse app usa armazenamento separado e preserva a instalação anterior. Passe
+`-Package org.supermanreturns.mobile.native` ao instalador de shaders e ao
+coletor `tools/validate_native_device.ps1` ao validar essa build.
 As ferramentas baixadas nesta sessão ficam em `.tools/`, ignorada pelo Git.
 Também é possível abrir a pasta `android/` no Android Studio.
 
@@ -81,8 +87,16 @@ Para incluir o runtime experimental (também exige Python, Git e CMake 3.25+):
 Os arquivos gerados são copiados para uma pasta privada e recompilados com os
 mesmos headers do runtime. O adaptador remove apenas metadados `codegen_flags`
 com todos os campos falsos, ausentes no fork anterior; isso não confirma toda a
-compatibilidade em execução. O renderer inicial usa a resolução original
-1280×720 e o backend Vulkan de Xbox 360 do fork, com tradução SPIR-V no aparelho.
+compatibilidade em execução. O renderer nativo usa o layout original
+1280×720 e uma biblioteca SPIR-V preparada no Windows. Ele não usa fallback
+automático para o backend Xenos. Prepare a biblioteca antes de iniciar:
+
+```powershell
+.\tools\prepare_native_shaders.ps1 -RecompRoot '..\superman_returns_recomp'
+# Após instalar o APK com adb install -r:
+.\tools\prepare_native_shaders.ps1 -RecompRoot '..\superman_returns_recomp' -Install -Device '<serial>'
+```
+
 Depois de importar os dados, use **Iniciar jogo experimental**.
 
 Para testar em um aparelho autorizado por ADB:
@@ -113,18 +127,21 @@ Os símbolos do runtime e dos hooks ainda exigem implementações ao linkar.
 
 ## Caminho experimental de gameplay
 
-O caminho Vulkan de PC ainda inclui classes e providers Direct3D 12, um
-compilador de shaders iniciado via Win32 e código SIMD exclusivo de x86.
-Por isso o primeiro alvo Android usa o backend Vulkan completo do fork ReXGlue,
-em vez do renderer nativo personalizado do PC. A integração inclui memória,
-threads, filesystem, áudio XMA, XInput e tradução de shaders SPIR-V no aparelho.
+O alvo atual adapta o renderer nativo Vulkan do PC por patches aplicados a uma
+cópia privada em `.tools/pc-native`. O bootstrap seleciona esse renderer;
+captura, comandos e apresentação Android não delegam draws ao backend Xenos.
+`source-lock.json` registra revisão, hashes dos fontes e adaptações. Shaders
+usados precisam existir na biblioteca privada `.srvk`; uma falta interrompe
+a execução e produz diagnóstico, sem omitir silenciosamente o draw.
+A integração ReXGlue fornece memória, threads, filesystem, áudio XMA e XInput.
 Os controles touch se conectam ao driver SDL e a correção XMA é recompilada
 com os headers do mesmo runtime.
 
 A compatibilidade completa do codegen com o fork anterior ainda depende dos
 testes de execução. É preciso validar boot, menus, gameplay, imagem, áudio,
 suspensão e consumo de memória no Galaxy S22 antes de prometer FPS.
-O renderer personalizado do PC continua sendo uma migração separada.
+As imagens de gameplay já existentes em `docs/evidence` pertencem ao backend
+anterior. Elas não comprovam a validação visual deste caminho nativo.
 
 O perfil de 30 FPS é um alvo de trabalho, não uma opção funcional do jogo nesta
 build. Veja [o plano técnico](docs/android-port.md) e

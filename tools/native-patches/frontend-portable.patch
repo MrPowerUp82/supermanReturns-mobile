@@ -1,19 +1,10 @@
 diff --git a/port/src/native_renderer/native_frontend.h b/port/src/native_renderer/native_frontend.h
---- a/port/src/native_renderer/native_frontend.h
+new file mode 100644
+--- /dev/null
 +++ b/port/src/native_renderer/native_frontend.h
-@@ -1,3 +1,6 @@
-+#if defined(__ANDROID__)
+@@ -0,0 +1,2 @@
++#pragma once
 +#include "native_frontend_android.h"
-+#else
- #pragma once
- 
- #include <cstdint>
-@@ -42,3 +45,5 @@
- };
- 
- } // namespace superman_returns::native
-+
-+#endif
 diff --git a/port/src/native_renderer/native_renderer.h b/port/src/native_renderer/native_renderer.h
 --- a/port/src/native_renderer/native_renderer.h
 +++ b/port/src/native_renderer/native_renderer.h
@@ -24,10 +15,10 @@ diff --git a/port/src/native_renderer/native_renderer.h b/port/src/native_render
  // Ported from crazyriddler/rexglue-native-kit @136bc6c4,
  // reference/conan/port/src/native/native_renderer.h (Conan native renderer).
  // The kit ships no license file at that revision; parts derived from Xenia /
-@@ -689,3 +692,5 @@
+@@ -715,3 +718,5 @@
+ };
  
  }  // namespace superman_returns::native
- 
 +
 +#endif
 diff --git a/port/src/native_renderer/shader_registry.cpp b/port/src/native_renderer/shader_registry.cpp

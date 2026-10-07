@@ -11,12 +11,7 @@ public final class GameActivity extends SDLActivity {
     @Override protected String[] getArguments() {
         String files=getFilesDir().getAbsolutePath();
         return new String[]{"--game_data_root="+files+"/game","--user_data_root="+files+"/userdata",
-            "--cache_path="+files+"/cache","--log_file="+files+"/game.log","--gpu_backend=vulkan","--log_level=info",
-            "--draw_resolution_scale_x=1","--draw_resolution_scale_y=1","--resolution_scale=1",
-            "--texture_cache_memory_limit_soft=256","--texture_cache_memory_limit_hard=512",
-            "--texture_cache_memory_limit_render_to_texture=64","--texture_cache_memory_limit_soft_lifetime=5",
-            "--vulkan_spirv_optimize=true","--vulkan_pipeline_creation_threads=2",
-            "--vulkan_mobile_cache_clear_interval=60"};
+            "--cache_path="+files+"/cache","--log_file="+files+"/game.log","--log_level=info"};
     }
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -25,8 +20,10 @@ public final class GameActivity extends SDLActivity {
         controls=new ControllerView(this,GameActivity::setTouchState);
         mLayout.addView(controls,new ViewGroup.LayoutParams(-1,-1));
     }
-    @Override protected void onPause() {if(controls!=null)controls.clear();super.onPause();}
+    @Override protected void onPause() {if(controls!=null)controls.clear();setNativePaused(true);super.onPause();}
+    @Override protected void onResume() {super.onResume();setNativePaused(false);}
     @Override protected void onDestroy() {if(controls!=null)controls.clear();super.onDestroy();}
     @Override public void onWindowFocusChanged(boolean focus) {super.onWindowFocusChanged(focus);if(!focus&&controls!=null)controls.clear();}
     private static native void setTouchState(int buttons,float lx,float ly,float rx,float ry,float lt,float rt);
+    private static native void setNativePaused(boolean paused);
 }

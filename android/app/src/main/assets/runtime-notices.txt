@@ -3491,6 +3491,6 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-PC native Vulkan renderer source revision: 440048530a74799359a2ed5f0ff736144026e35f
+PC native Vulkan renderer source revision: ae5107814a5686de5fa1eff11a1120d07fa7d883
 Source and adaptation hashes are recorded privately in source-lock.json.
 Origin: crazyriddler/rexglue-native-kit @136bc6c4; kit revision supplies no license file. Xenia/ReXGlue-derived portions retain their BSD notices in source files.

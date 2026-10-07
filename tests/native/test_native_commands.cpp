@@ -1,20 +1,39 @@
 #include "native_command_system.h"
 #include "native_graphics_system_vulkan.h"
+#include "native_bridge.h"
+#include "native_frontend.h"
 #include <rex/system/xmemory.h>
 #include <cstdio>
 #include <cstring>
 #include <future>
 #include <stdexcept>
 #include <source_location>
+#include <cstdlib>
 using namespace superman_returns::native;
 static void Check(bool ok,std::source_location at=std::source_location::current()){if(!ok)throw std::runtime_error("assertion line "+std::to_string(at.line()));}
-int main(){try{
+int main(int argc,char** argv){try{
  rex::memory::Memory memory;Check(memory.Initialize());uint32_t alias=0;
  Check(memory.LookupHeapByType(true,0x1000)->Alloc(0x1000,0x1000,rex::memory::kMemoryAllocationReserve|rex::memory::kMemoryAllocationCommit,rex::memory::kMemoryProtectRead|rex::memory::kMemoryProtectWrite,false,&alias));
  uint32_t physical=(alias&0x1FFFFFFF)+(alias>=0xE0000000?0x1000:0);auto bytes=memory.TranslatePhysical<uint8_t*>(physical);
  auto write=[&](unsigned index,uint32_t value){value=__builtin_bswap32(value);std::memcpy(bytes+index*4,&value,4);};
  auto read=[&](unsigned offset){uint32_t value;std::memcpy(&value,bytes+offset,4);return __builtin_bswap32(value);};
  VulkanNativeGraphicsSystem gpu({});gpu.InitializeCommandMemory(memory);gpu.InitializeRingBuffer(physical,0);gpu.EnableReadPointerWriteBack(physical+64,0);gpu.SetSystemCommandBufferGpuIdentifierAddress(alias+68);
+ if(argc==2) {
+   NativeFrontend frontend;std::string error;
+   Check(frontend.InstallPacketSink([](auto&&,std::string&){return true;},[]{}));
+   Check(ActivateNativeFrontend(frontend,error));
+   SetNativeFailureHandler([](const std::string& reason) {
+     if(RendererActive() || reason.empty()) std::exit(2);
+     std::puts("PASS command worker failure: diagnostic callback and frontend deactivated");
+     std::exit(0);
+   });
+   if(std::string(argv[1])=="--worker-unmapped") gpu.InitializeRingBuffer(0x10000000,0);
+   else {write(0,0xC0003C00u);write(1,0);gpu.InitializeRingBuffer(physical,2);}
+   gpu.ProcessPendingRing(2);
+   throw std::runtime_error("command worker failure was not reported");
+ }
+ for(const char* mode:{"--worker-invalid","--worker-unmapped"})
+   Check(std::system((std::string("\"")+argv[0]+"\" "+mode).c_str())==0);
  // An 8-byte ring consumes a Type-0 packet, then the same packet across wrap.
  write(0,0x100);write(1,7);Check(gpu.ConsumeRing(0)==true); // empty
  // Reconfigure a 32-byte ring (8 dwords); fill to six, then wrap header/payload.
@@ -23,7 +42,10 @@ int main(){try{
  uint32_t cb=0,data=0,source=0,cpu=0;gpu.SetInterruptCallback(0x82001000,0x11223344);gpu.SetInterruptDispatcher([&](uint32_t c,uint32_t d,uint32_t s,uint32_t n){cb=c;data=d;source=s;cpu=n;});
  write(1,0xC0005400u);write(2,4);Check(gpu.ConsumeRing(3));Check(cb==0x82001000 && data==0x11223344 && source==1 && cpu==2);
  auto since=gpu.progress_generation();auto waiter=std::async(std::launch::async,[&]{gpu.WaitProgress(since,1000000);});gpu.SignalGpuProgress();Check(waiter.wait_for(std::chrono::milliseconds(200))==std::future_status::ready);
- gpu.SetPaused(true);auto frame=gpu.guest_frame_counter();gpu.TickVblank();Check(gpu.guest_frame_counter()==frame);gpu.SetPaused(false);gpu.TickVblank();Check(gpu.guest_frame_counter()==frame+1);
+ gpu.SetPaused(true);auto frame=gpu.guest_frame_counter();
+ // A pause racing the worker's precheck is a successful deferral, not corruption.
+ Check(gpu.ConsumeRing(5));Check(read(64)==3);
+ gpu.TickVblank();Check(gpu.guest_frame_counter()==frame);gpu.SetPaused(false);gpu.TickVblank();Check(gpu.guest_frame_counter()==frame+1);
  // Malformed WAIT has fewer words than its documented five-word payload.
  write(3,0xC0003C00u);write(4,0);Check(!gpu.ConsumeRing(5));
  // A real WAIT_REG_MEM cannot satisfy its predicate and must stop on shutdown.

@@ -1,56 +1,35 @@
 diff --git a/port/src/native_renderer/native_graphics_system_interface.h b/port/src/native_renderer/native_graphics_system_interface.h
---- a/port/src/native_renderer/native_graphics_system_interface.h
+new file mode 100644
+--- /dev/null
 +++ b/port/src/native_renderer/native_graphics_system_interface.h
-@@ -1,5 +1,6 @@
- #pragma once
- #include <cstdint>
+@@ -0,0 +1,19 @@
++#pragma once
++#include <cstdint>
 +#include <functional>
- #include <rex/system/interfaces/graphics.h>
- 
- namespace rex::ui {
-@@ -26,6 +27,7 @@
-     virtual void SignalGpuProgress() = 0;
-     virtual uint64_t progress_generation() const = 0;
-     virtual void WaitProgress(uint64_t since, uint32_t timeout_us) = 0;
-+    virtual void WaitCondition(const std::function<bool()>&,uint32_t) = 0;
- };
- 
- // Returns the active instance
++#include <rex/system/interfaces/graphics.h>
++namespace superman_returns::native {
++class INativeGraphicsSystem : public rex::system::IGraphicsSystem {
++public:
++  virtual uint32_t guest_frame_counter() const = 0;
++  virtual bool GetGammaRamp256(uint32_t*) const = 0;
++  virtual void SignalGpuProgress() = 0;
++  virtual uint64_t progress_generation() const = 0;
++  virtual void WaitProgress(uint64_t, uint32_t) = 0;
++  virtual void WaitCondition(const std::function<bool()>&, uint32_t) = 0;
++};
++INativeGraphicsSystem* ActiveNativeGraphicsSystem();
++uint64_t GpuProgressGeneration();
++void WaitForGpuProgress(uint64_t since, uint32_t timeout_us);
++void WaitForGpuCondition(const std::function<bool()>& done, uint32_t timeout_us);
++}
 diff --git a/port/src/native_renderer/native_graphics_system_vulkan.h b/port/src/native_renderer/native_graphics_system_vulkan.h
---- a/port/src/native_renderer/native_graphics_system_vulkan.h
+new file mode 100644
+--- /dev/null
 +++ b/port/src/native_renderer/native_graphics_system_vulkan.h
-@@ -1,30 +1,5 @@
- #pragma once
--#include "native_graphics_system_interface.h"
--
+@@ -0,0 +1,5 @@
++#pragma once
 +#include "native_command_system.h"
- namespace superman_returns::native {
--
--class VulkanNativeGraphicsSystem : public INativeGraphicsSystem {
--public:
--    VulkanNativeGraphicsSystem();
--    ~VulkanNativeGraphicsSystem() override;
--
--    bool has_presentation() const override { return false; }
--    rex::ui::GraphicsProvider* provider() const override { return nullptr; }
--    rex::ui::Presenter* presenter() const override { return nullptr; }
--    uint32_t guest_frame_counter() const override { return 0; }
--    bool GetGammaRamp256(uint32_t* out_entries) const override { return false; }
--    void SetInterruptCallback(uint32_t callback, uint32_t user_data) override {}
--    void InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) override {}
--    void EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) override {}
--    void Shutdown() override {}
--
--    void SignalGpuProgress() override {}
--    uint64_t progress_generation() const override { return 0; }
--    void WaitProgress(uint64_t since, uint32_t timeout_us) override {}
--
--    rex::X_STATUS SetupPresentation(rex::ui::WindowedAppContext* app_context) override;
--    rex::X_STATUS SetupGuestGpu(rex::runtime::FunctionDispatcher* function_dispatcher,
--                           rex::system::KernelState* kernel_state) override;
--};
--
--} // namespace superman_returns::native
++namespace superman_returns::native {
 +class VulkanNativeGraphicsSystem final:public NativeCommandSystem {public: explicit VulkanNativeGraphicsSystem(ProviderFactory factory):NativeCommandSystem(std::move(factory)) {}};
 +}
 diff --git a/port/src/native_renderer/native_command_system.h b/port/src/native_renderer/native_command_system.h

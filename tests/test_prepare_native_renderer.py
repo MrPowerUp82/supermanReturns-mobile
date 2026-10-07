@@ -136,5 +136,21 @@ class PrepareNativeRendererTests(unittest.TestCase):
         self.prepare(ok=False)
 
 
+class ProductionPatchTests(unittest.TestCase):
+    def test_production_patches_apply_to_pc_checkout(self):
+        root = SCRIPT.parent.parent
+        pc = root.parent / 'superman_returns_recomp'
+        if not (pc / 'port/src/graphics/vulkan/platform/native_provider.cpp').is_file():
+            self.skipTest('PC reference checkout unavailable')
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'snapshot'
+            command = [sys.executable, str(SCRIPT), '--recomp', str(pc), '--output', str(output)]
+            prepared = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            verified = subprocess.run(command + ['--verify'], capture_output=True, text=True)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            self.assertTrue((output / 'port/src/graphics/vulkan/platform/android_provider.cpp').is_file())
+
+
 if __name__ == '__main__':
     unittest.main()

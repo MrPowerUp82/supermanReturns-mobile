@@ -1,4 +1,4 @@
-param([string]$AndroidSdk, [string]$JavaHome)
+param([string]$AndroidSdk, [string]$JavaHome, [switch]$NativeSideBySide)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 if (-not $JavaHome) { $JavaHome=$env:JAVA_HOME }
@@ -14,11 +14,14 @@ $env:JAVA_HOME=$JavaHome
 $env:ANDROID_HOME=$AndroidSdk
 $sdkPath=(Resolve-Path $AndroidSdk).Path.Replace('\','/')
 Set-Content -LiteralPath (Join-Path $root 'android\local.properties') -Value "sdk.dir=$sdkPath" -Encoding ascii
-& (Join-Path $root 'android\gradlew.bat') -p (Join-Path $root 'android') assembleDebug lintDebug --console=plain
+$gradleArgs=@('assembleDebug','lintDebug','--console=plain')
+if($NativeSideBySide){$gradleArgs+='-PnativeSideBySide=true'}
+& (Join-Path $root 'android\gradlew.bat') -p (Join-Path $root 'android') @gradleArgs
 if ($LASTEXITCODE -ne 0) { throw "Gradle falhou: $LASTEXITCODE" }
 $artifacts=Join-Path $root 'artifacts'
 New-Item -ItemType Directory -Force $artifacts | Out-Null
-$apk=Join-Path $artifacts 'superman-returns-mobile-0.1.0-dev.apk'
+$apkName=if($NativeSideBySide){'superman-returns-native-vulkan-0.1.0-dev.apk'}else{'superman-returns-mobile-0.1.0-dev.apk'}
+$apk=Join-Path $artifacts $apkName
 Copy-Item -LiteralPath (Join-Path $root 'android\app\build\outputs\apk\debug\app-debug.apk') -Destination $apk
 $verifyArgs=@($apk)
 if(Test-Path (Join-Path $root 'android\app\libs\arm64-v8a\libsuperman_game.so')) {$verifyArgs+='--with-game'}

@@ -39,3 +39,198 @@ diff --git a/port/src/graphics/shaders/vulkan_shader_service.cpp b/port/src/grap
        auto count=r.Word();if(!count || count>16384) throw std::runtime_error("Invalid shader library count");
        uint64_t checksum=r.Word();checksum|=uint64_t(r.Word())<<32;
        if(HashBytes(std::span<const uint8_t>(bytes).subspan(24))!=checksum) throw std::runtime_error("Shader library checksum mismatch");
+--- a/port/src/graphics/vulkan/descriptor_sets.h
++++ b/port/src/graphics/vulkan/descriptor_sets.h
+@@ -44,7 +44,7 @@
+   ~DescriptorStore();
+   bool Initialize(Error&);
+   // `constants` is the draw's 12 KiB block, already filled (BuildBindings); Prepare flushes it and binds it.
+-  bool Prepare(const DrawBindings&,const std::array<std::array<uint32_t,6>,32>& fetch,
++  bool Prepare(DrawBindings&,const std::array<std::array<uint32_t,6>,32>& fetch,
+       ResourceStore&,uint64_t submission,const TransientSlice& constants,DescriptorDraw& out,Error&);
+   void Retire(uint64_t completed_serial);
+   const std::array<VkDescriptorSetLayout,4>& Layouts() const {return layouts_;}
+--- a/port/src/graphics/vulkan/descriptor_sets.cpp
++++ b/port/src/graphics/vulkan/descriptor_sets.cpp
+@@ -1,4 +1,5 @@
+ #include "descriptor_sets.h"
++#include "texture_filter.h"
+ #include "device_requirements.h"
+ #include <algorithm>
+ #include <cstddef>
+@@ -50,7 +51,7 @@
+   // Key: identity of every bound resource plus the sampler/filter state that decides which sampler and which
+   // format checks apply. Built in a fixed array together with its hash, so a hit allocates nothing.
+   // Consecutive slots mostly bind the same dummy IDs, so repeated lookups are memoized.
+-  std::array<uint64_t,6*32> key;uint32_t words=0;uint64_t hash=14695981039346656037ull;
++  std::array<uint64_t,7*32> key;uint32_t words=0;uint64_t hash=14695981039346656037ull;
+   auto push=[&](uint64_t value) {key[words++]=value;hash^=value;hash*=1099511628211ull;};
+   // The texture loop visits dimension 0, 1, 2 of each slot in turn, so each dimension keeps its own last id.
+   guest::ResourceId last_buffer=~0ull;const void* buffer_ptr=nullptr;
+@@ -68,6 +69,7 @@
+     for(uint32_t dimension=0;dimension<3;++dimension) {auto* t=texture_key(dimension,bindings.textures[dimension][slot]);push(uint64_t(reinterpret_cast<uintptr_t>(t)));complete&=t!=nullptr;}
+     // Only the sampler/filter bits of texture slots matter. Other slots hold
+     // vertex fetch constants whose addresses change every frame.
++    push(bindings.sampler_indices[slot]);
+     if((fetch[slot][0]&3)==2) {
+       push((uint64_t(fetch[slot][0]&0x7fc00u)<<32)|(fetch[slot][3]&0xff80000u));
+       push((uint64_t(1)<<63)|(uint64_t((fetch[slot][5]>>9)&3)<<32)|bindings.texture_indices[slot]);
+@@ -108,18 +110,12 @@
+     }
+     // Non-texture slots only expose the dummy texture: any sampler will do.
+     static constexpr std::array<uint32_t,6> no_texture{};
+-    auto sampler=Sampler((fetch[slot][0]&3)==2?std::span<const uint32_t,6>(fetch[slot]):std::span<const uint32_t,6>(no_texture),e);if(!sampler) return nullptr;
++    auto effective=(fetch[slot][0]&3)==2?fetch[slot]:no_texture;
++    if(bindings.sampler_indices[slot]&32u) effective[3]&=~0x0ff80000u;
++    auto sampler=Sampler(effective,e);if(!sampler) return nullptr;
+     sampler_info[slot]={sampler->handle,VK_NULL_HANDLE,VK_IMAGE_LAYOUT_UNDEFINED};
+     if(entry->samplers.empty() || entry->samplers.back()!=sampler) entry->samplers.push_back(sampler);
+-    if((fetch[slot][0]&3)==2 && (((fetch[slot][3]>>19)&3)==1 || ((fetch[slot][3]>>21)&3)==1 || ((fetch[slot][3]>>25)&7)>1)) {
+-      uint32_t dimension=(fetch[slot][5]>>9)&3;dimension=dimension?dimension-1:0;
+-      auto texture=store.Texture(bindings.textures[dimension][bindings.texture_indices[slot]&0x7fffu],e);if(!texture) return nullptr;
+-      auto features=filter_features_.find(texture->format);
+-      if(features==filter_features_.end()) {VkFormatProperties properties{};c_.f.vkGetPhysicalDeviceFormatProperties(c_.physical,texture->format,&properties);features=filter_features_.emplace(texture->format,properties.optimalTilingFeatures).first;}
+-      if(!(features->second&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
+-        e={"Texture filtering",VK_ERROR_FORMAT_NOT_SUPPORTED,"Guest sampler requests linear filtering of an unsupported format: format="+std::to_string(texture->format)+" slot="+std::to_string(slot)+" dimension="+std::to_string(dimension)+" extent="+std::to_string(texture->extent.width)+"x"+std::to_string(texture->extent.height)+" features="+std::to_string(features->second)+" fetch3="+std::to_string(fetch[slot][3])};return nullptr;
+-      }
+-    }
++
+   }
+   // Watch each distinct buffer/texture once, weakly: the entry never extends their lifetime.
+   std::sort(buffers.begin(),buffers.end());buffers.erase(std::unique(buffers.begin(),buffers.end()),buffers.end());
+@@ -165,18 +161,36 @@
+     it=list.empty()?cache_.erase(it):std::next(it);
+   }
+ }
+-bool DescriptorStore::Prepare(const DrawBindings& bindings,const std::array<std::array<uint32_t,6>,32>& fetch,
++bool DescriptorStore::Prepare(DrawBindings& bindings,const std::array<std::array<uint32_t,6>,32>& fetch,
+     ResourceStore& store,uint64_t serial,const TransientSlice& constants,DescriptorDraw& out,Error& e) {
+   if(!layouts_[0] || serial<=completed_ || store.CurrentSerial()!=serial) {
+     e={"Draw descriptors",VK_ERROR_INITIALIZATION_FAILED,"Missing layouts or recording submission"};return false;
+   }
+-  for(uint32_t slot=0;slot<32;++slot) if((bindings.texture_indices[slot]&0x7fffu)>=32 || bindings.sampler_indices[slot]!=slot) {
++  for(uint32_t slot=0;slot<32;++slot) if((bindings.texture_indices[slot]&0x7fffu)>=32 || (bindings.sampler_indices[slot]&31u)!=slot || (bindings.sampler_indices[slot]&~1023u)!=0) {
+     e={"Draw descriptors",VK_ERROR_INITIALIZATION_FAILED,"Descriptor index was not remapped into the draw arrays"};return false;
+   }
+   if(!constants.chunk || constants.size!=sizeof(guest::ConstantSnapshot)) {
+     e={"Draw descriptors",VK_ERROR_INITIALIZATION_FAILED,"Constant block is missing or has the wrong size"};return false;
+   }
+   if(constants.offset>UINT32_MAX) {e={"Draw descriptors",VK_ERROR_OUT_OF_DEVICE_MEMORY,"Constant block offset exceeds the dynamic offset range"};return false;}
++  std::array<uint32_t,32> words{};
++  for(uint32_t slot=0;slot<32;++slot) {
++    TextureSamplingPlan plan;VkFormat format=VK_FORMAT_UNDEFINED;VkFormatFeatureFlags features=0;
++    uint32_t dim=(fetch[slot][5]>>9)&3;dim=dim?dim-1:0;
++    if((fetch[slot][0]&3)==2) {
++      auto texture=store.Texture(bindings.textures[dim][bindings.texture_indices[slot]&0x7fffu],e);if(!texture) return false;
++      format=texture->format;auto found=filter_features_.find(format);
++      if(found==filter_features_.end()) {VkFormatProperties properties{};c_.f.vkGetPhysicalDeviceFormatProperties(c_.physical,format,&properties);found=filter_features_.emplace(format,properties.optimalTilingFeatures).first;}
++      features=found->second;
++    }
++    if(!PlanTextureSampling(fetch[slot],format,features,TextureDimension(dim),slot,plan,e)) return false;
++    if(plan.manual && (bindings.texture_indices[slot]&0x1fff8000u)) {
++      e={"Texture filtering",VK_ERROR_FEATURE_NOT_PRESENT,"Manual filter cannot preserve bicubic/host-scale flags: format="+std::to_string(format)+" slot="+std::to_string(slot)};return false;
++    }
++    words[slot]=plan.sampler_word;
++  }
++  bindings.sampler_indices=words;
++  std::memcpy(constants.data+kSharedConstantsOffset+128,words.data(),sizeof(words));
+   const DescriptorCacheEntry* shared=Shared(bindings,fetch,store,serial,e);if(!shared) return false;
+   // VS, PS and shared constants are contiguous in ConstantSnapshot: one block per draw, written in place.
+   if(!store.FlushTransient(constants,e)) return false;
+--- a/port/src/graphics/vulkan/CMakeLists.txt
++++ b/port/src/graphics/vulkan/CMakeLists.txt
+@@ -2,7 +2,7 @@
+ if(NOT EXISTS "${SR_VULKAN_HEADERS}/vulkan/vulkan.h")
+   message(FATAL_ERROR "Run tools/setup_vulkan.ps1 to fetch headers")
+ endif()
+-add_library(sr_vulkan_core STATIC policy.cpp loader.cpp context.cpp swapchain.cpp frame_loop.cpp triangle.cpp smoke_options.cpp device_requirements.cpp descriptors.cpp descriptor_sets.cpp resources.cpp image_state.cpp render_targets.cpp game_pipeline.cpp game_renderer.cpp ../guest/edram_alias.cpp ../shaders/vulkan_shader_service.cpp)
++add_library(sr_vulkan_core STATIC policy.cpp loader.cpp context.cpp swapchain.cpp frame_loop.cpp triangle.cpp smoke_options.cpp device_requirements.cpp descriptors.cpp descriptor_sets.cpp texture_filter.cpp resources.cpp image_state.cpp render_targets.cpp game_pipeline.cpp game_renderer.cpp ../guest/edram_alias.cpp ../shaders/vulkan_shader_service.cpp)
+ target_link_libraries(sr_vulkan_core PRIVATE ${CMAKE_DL_LIBS})
+ target_include_directories(sr_vulkan_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${SR_VULKAN_HEADERS}")
+ target_compile_features(sr_vulkan_core PUBLIC cxx_std_23)
+--- a/tests/vulkan/test_shader_service.cpp
++++ b/tests/vulkan/test_shader_service.cpp
+@@ -8,7 +8,7 @@
+ namespace {
+ void Word(std::vector<uint8_t>& v,uint32_t n) {auto p=reinterpret_cast<uint8_t*>(&n);v.insert(v.end(),p,p+4);}
+ std::vector<uint8_t> Wire() {
+-  std::vector<uint8_t> v;for(uint32_t n:{0x33525653u,1u,1u,0u}) Word(v,n);
++  std::vector<uint8_t> v;for(uint32_t n:{0x33525653u,2u,1u,0u}) Word(v,n);
+   for(uint32_t i=0;i<12;++i) Word(v,0); // requirements
+   Word(v,0);Word(v,0);Word(v,20);
+   for(uint32_t n:{0x07230203u,0x10300u,0u,1u,0u}) Word(v,n);
+@@ -100,7 +100,7 @@
+ }
+ namespace {
+ std::vector<uint8_t> Library(std::vector<uint8_t> body,uint32_t count=1) {
+-  std::vector<uint8_t> bytes{'S','R','V','K','L','I','B',0};Word(bytes,1);Word(bytes,count);
++  std::vector<uint8_t> bytes{'S','R','V','K','L','I','B',0};Word(bytes,2);Word(bytes,count);
+   uint64_t checksum=14695981039346656037ull;for(auto b:body) {checksum^=b;checksum*=1099511628211ull;}
+   Word(bytes,uint32_t(checksum));Word(bytes,uint32_t(checksum>>32));bytes.insert(bytes.end(),body.begin(),body.end());return bytes;
+ }
+--- /dev/null
++++ b/port/src/graphics/vulkan/texture_filter.h
+@@ -0,0 +1,11 @@
++#pragma once
++#include "descriptors.h"
++namespace superman_returns::graphics::vulkan {
++struct TextureSamplingPlan {
++  uint32_t sampler_word=0;
++  std::array<uint32_t,6> sampler_fetch{};
++  bool manual=false;
++};
++bool PlanTextureSampling(std::span<const uint32_t,6>,VkFormat,VkFormatFeatureFlags,
++                         TextureDimension,uint32_t slot,TextureSamplingPlan&,Error&);
++}
+--- /dev/null
++++ b/port/src/graphics/vulkan/texture_filter.cpp
+@@ -0,0 +1,27 @@
++#include "texture_filter.h"
++#include <algorithm>
++namespace superman_returns::graphics::vulkan {
++bool PlanTextureSampling(std::span<const uint32_t,6> fetch,VkFormat format,VkFormatFeatureFlags features,
++                         TextureDimension dimension,uint32_t slot,TextureSamplingPlan& out,Error& e) {
++  auto fail=[&](const char* reason) {
++    e={"Texture filtering",VK_ERROR_FORMAT_NOT_SUPPORTED,std::string(reason)+
++      ": format="+std::to_string(format)+" slot="+std::to_string(slot)+
++      " dimension="+std::to_string(uint32_t(dimension))+" fetch3="+std::to_string(fetch[3])};return false;
++  };
++  if(slot>=32) return fail("Invalid sampler slot");
++  TextureSamplingPlan next;next.sampler_word=slot;std::copy(fetch.begin(),fetch.end(),next.sampler_fetch.begin());
++  if((fetch[0]&3)==2) {
++    uint32_t mag=(fetch[3]>>19)&3,min=(fetch[3]>>21)&3,mip=(fetch[3]>>23)&3,aniso=(fetch[3]>>25)&7;
++    if(mag>1 || min>1 || mip>2) return fail("Unresolved guest filter");
++    bool needsLinear=mag==1 || min==1 || mip==1 || aniso>1;
++    if(needsLinear && !(features&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
++      if(dimension!=TextureDimension::k2D || (format!=VK_FORMAT_R32_SFLOAT && format!=VK_FORMAT_R32G32_SFLOAT && format!=VK_FORMAT_R32G32B32A32_SFLOAT)) return fail("Manual filter format/dimension is unsupported");
++      if(aniso>1) return fail("Manual anisotropy is unsupported");
++      for(uint32_t shift:{10u,13u,16u}) {uint32_t address=(fetch[0]>>shift)&7;if(address==3 || address==5 || address==7) return fail("Manual mirror-clamp is unvalidated");}
++      next.manual=true;next.sampler_word=slot|32u|(mag<<6)|(min<<7)|(mip<<8);
++      next.sampler_fetch[3]&=~0x0ff80000u;
++    }
++  }
++  out=next;e={};return true;
++}
++}
+--- a/port/src/graphics/vulkan/descriptors.cpp
++++ b/port/src/graphics/vulkan/descriptors.cpp
+@@ -110,7 +110,7 @@
+   }
+   // Match the reference's original-scale sampler. Fetch LOD bias is emitted
+   // by the guest shader; adding it here would apply the bias twice.
+-  next.minLod=0;next.maxLod=VK_LOD_CLAMP_NONE;
++  next.minLod=0;next.maxLod=((fetch[3]>>23)&3)==2?0:VK_LOD_CLAMP_NONE;
+   next.compareOp=VK_COMPARE_OP_NEVER;next.borderColor=VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+   out=next;e={};return true;
+ }
+--- a/tests/vulkan/test_shader_service.cpp
++++ b/tests/vulkan/test_shader_service.cpp
+@@ -139,7 +139,7 @@
+   std::vector<std::vector<uint8_t>> invalid;
+   auto truncated=valid;truncated.pop_back();invalid.push_back(truncated);
+   auto checksum=valid;checksum[16]^=1;invalid.push_back(checksum);
+-  auto version=valid;version[8]=2;invalid.push_back(version);
++  auto version=valid;version[8]=1;invalid.push_back(version);
+   auto trailing=body;trailing.push_back(0);invalid.push_back(Library(trailing));
+   auto duplicated=body;duplicated.insert(duplicated.end(),body.begin(),body.end());invalid.push_back(Library(duplicated,2));
+   auto wrong=LibraryBody(ShaderStage::kPixel,original,Wire());auto partial=body;partial.insert(partial.end(),wrong.begin(),wrong.end());invalid.push_back(Library(partial,2));
