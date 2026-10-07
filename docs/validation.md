@@ -93,5 +93,28 @@ O perfil seguinte limita cache de texturas a 256 MB soft / 512 MB hard,
 render-to-texture 64 MB e vida soft de 5 segundos. A cena e a estabilidade
 desse perfil ainda estão sob teste. Não foi prometido FPS de gameplay.
 
-O limite de render target foi corrigido de 2048 para 720 em GameActivity.java. Isso reduziu drasticamente o consumo de memria grfica (de ~20 MiB por render target grande para ~1-3 MiB), estabilizando o uso total de memria e evitando quedas por LOW_MEMORY. O jogo agora avana para gameplay com simulao e renderizao em andamento. Evidncia: [gameplay](evidence/s22-game-gameplay.png).
+Um perfil experimental limitou a altura dos render targets a 720. A imagem
+[evidência adicional de loading](evidence/s22-game-gameplay.png) mostra somente
+a tela de carregamento; não comprova gameplay nem estabilidade de memória.
+
+### Reteste após checkpoint 2
+
+A factory foi ligada ao `VulkanGraphicsSystem` completo do SDK, removendo do
+alvo o placeholder Vulkan do PC. Build nativa, assemble, lint, assinatura,
+zipalign e verificação ELF passaram. No S22, `InitializeShaderStorage` terminou
+e o guest foi iniciado com status `00000000`, superando o crash descrito no
+checkpoint. O [menu de pausa](evidence/s22-game-pause.png) apareceu e respondeu
+a START/A. A cena permaneceu preta. PSS observado: aproximadamente 3,3 GB;
+Graphics: aproximadamente 2,7 GB. Esse teste não comprova gameplay funcional.
+
+Os testes com otimização SPIR-V, occlusion queries desativadas e altura normal
+dos render targets também não corrigiram a cena. O limite artificial de 720
+foi retirado do perfil. Resumos da GPU confirmaram milhares de draws e resolves,
+incluindo frames sem placeholders assíncronos, com a imagem ainda preta.
+
+O patch `mobile-upload-cache-trim.patch` libera o pool temporário de uploads
+da memória compartilhada após a sincronização da GPU. O aparelho executou
+limpezas repetidas sem crash. O reteste com readback de resolves pequenos
+também não corrigiu a cena; PSS chegou a 3,32 GB. A configuração de diagnóstico
+foi removida do aparelho ao terminar. Detalhes em `checkpoints/checkpoint3.md`.
 

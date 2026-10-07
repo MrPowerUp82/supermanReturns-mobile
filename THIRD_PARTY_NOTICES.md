@@ -38,3 +38,8 @@ Os textos de licença e avisos dos diretórios upstream são reunidos por
 ReXGlue usa BSD-3-Clause e SDL usa zlib; as demais dependências preservam
 seus próprios termos, incluindo FFmpeg LGPL. O código gerado e a correção
 XMA vêm da recompilação local e são preparados em `.tools/android-guest/`.
+
+As modificações locais do runtime ficam em `tools/runtime-patches/`: sincronização
+de nomes de threads, limpeza periódica dos caches Vulkan, limite opcional de
+altura de render targets e liberação dos buffers temporários de upload após
+sincronização da GPU. Os avisos upstream permanecem preservados.

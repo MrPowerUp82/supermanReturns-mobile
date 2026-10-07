@@ -1,0 +1,33 @@
+diff --git a/include/rex/graphics/vulkan/shared_memory.h b/include/rex/graphics/vulkan/shared_memory.h
+index 4092daa..0edcce9 100644
+--- a/include/rex/graphics/vulkan/shared_memory.h
++++ b/include/rex/graphics/vulkan/shared_memory.h
+@@ -32,6 +32,8 @@ class VulkanSharedMemory : public SharedMemory {
+ 
+   bool Initialize();
+   void Shutdown(bool from_destructor = false);
++  // The caller must have drained GPU submissions, as for other cache clears.
++  void ClearCache() override;
+ 
+   void CompletedSubmissionUpdated();
+   void EndSubmission();
+diff --git a/src/graphics/vulkan/shared_memory.cpp b/src/graphics/vulkan/shared_memory.cpp
+index de96fe8..4c4be3a 100644
+--- a/src/graphics/vulkan/shared_memory.cpp
++++ b/src/graphics/vulkan/shared_memory.cpp
+@@ -328,6 +328,15 @@ bool VulkanSharedMemory::Initialize() {
+   return true;
+ }
+ 
++void VulkanSharedMemory::ClearCache() {
++  SharedMemory::ClearCache();
++  // Reclaim() makes staging pages reusable but retains the peak allocation.
++  // These are temporary CPU-to-GPU copies, not the buffer holding guest data.
++  if (upload_buffer_pool_) {
++    upload_buffer_pool_->ClearCache();
++  }
++}
++
+ void VulkanSharedMemory::Shutdown(bool from_destructor) {
+   ResetTraceDownload();
+ 
