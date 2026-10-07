@@ -3489,3 +3489,8 @@ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
 ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+PC native Vulkan renderer source revision: 440048530a74799359a2ed5f0ff736144026e35f
+Source and adaptation hashes are recorded privately in source-lock.json.
+Origin: crazyriddler/rexglue-native-kit @136bc6c4; kit revision supplies no license file. Xenia/ReXGlue-derived portions retain their BSD notices in source files.

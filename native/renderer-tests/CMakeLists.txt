@@ -43,6 +43,7 @@ endif()
 add_library(test_native_commands_object OBJECT "${SR_ROOT}/tests/native/test_native_commands.cpp")
 target_include_directories(test_native_commands_object PRIVATE "${SR_PC}/native_renderer")
 add_executable(test_native_commands $<TARGET_OBJECTS:test_native_commands_object> "${SR_PC}/native_renderer/native_command_system.cpp" "${SR_PC}/native_renderer/guest_reads_android.cpp" "${SR_ROOT}/tests/native/runtime_test_support.cpp")
+target_sources(test_native_commands PRIVATE "${SR_PC}/native_renderer/native_graphics_system_vulkan.cpp" "${SR_PC}/native_renderer/native_bridge_android.cpp")
 target_link_libraries(test_native_commands PRIVATE native_packet_capture sr_runtime log)
 target_include_directories(test_native_commands PRIVATE "${SR_PC}/native_renderer")
 target_link_options(test_native_commands PRIVATE -Wl,--gc-sections)
@@ -77,3 +78,15 @@ add_executable(test_vulkan_regressions
 )
 target_include_directories(test_vulkan_regressions PRIVATE "${SR_ROOT}/.tools/pc-native/tests/native")
 target_link_libraries(test_vulkan_regressions PRIVATE sr_vulkan_core)
+add_library(test_native_bootstrap_object OBJECT "${SR_ROOT}/tests/native/test_native_bootstrap.cpp")
+target_include_directories(test_native_bootstrap_object PRIVATE "${SR_ROOT}/native/game" "${SR_PC}/native_renderer")
+
+add_executable(test_native_bootstrap $<TARGET_OBJECTS:test_native_bootstrap_object>
+ "${SR_ROOT}/native/game/native_bootstrap.cpp"
+ "${SR_PC}/native_renderer/native_command_system.cpp"
+ "${SR_PC}/native_renderer/native_graphics_system_vulkan.cpp"
+ "${SR_PC}/native_renderer/native_bridge_android.cpp"
+ "${SR_PC}/graphics/vulkan/platform/android_provider.cpp")
+target_include_directories(test_native_bootstrap PRIVATE "${SR_ROOT}/native/game" "${SR_PC}/native_renderer")
+target_link_libraries(test_native_bootstrap PRIVATE sr_vulkan_core native_packet_capture sr_runtime android log)
+target_link_options(test_native_bootstrap PRIVATE -Wl,--gc-sections)
