@@ -1,0 +1,284 @@
+diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
+index 98f5575..39c184b 100644
+--- a/src/core/memory_posix.cpp
++++ b/src/core/memory_posix.cpp
+@@ -26,6 +26,8 @@
+ #include <rex/platform.h>
+ #include <rex/string.h>
+ 
++#include "proc_maps.h"
++
+ #if REX_PLATFORM_ANDROID
+ #include <string.h>
+ 
+@@ -135,43 +137,43 @@ uint32_t ToPosixProtectFlags(PageAccess access) {
+ #if REX_PLATFORM_LINUX
+ namespace {
+ 
+-struct LinuxMapEntry {
+-  uintptr_t start = 0;
+-  uintptr_t end = 0;
+-  char perms[5] = {};
+-};
++using LinuxMapEntry = detail::ProcMapsEntry;
+ 
+-// Parse a line from /proc/self/maps into a LinuxMapEntry
+-static bool ParseProcMapsLine(const std::string& line, LinuxMapEntry& out) {
+-  out = LinuxMapEntry{};
+-  unsigned long long start = 0, end = 0;
+-  char perms[5] = {};
+-  const int matched = std::sscanf(line.c_str(), "%llx-%llx %4s", &start, &end, perms);
+-  if (matched < 3)
+-    return false;
+-  out.start = static_cast<uintptr_t>(start);
+-  out.end = static_cast<uintptr_t>(end);
+-  std::memcpy(out.perms, perms, sizeof(out.perms));
+-  return out.start < out.end;
+-}
++// Reads /proc/self/maps with open/read only: QueryProtect() is called from the
++// write-watch fault handler, where stdio and iostreams are both slow and unsafe.
++class ProcMapsReader {
++ public:
++  ProcMapsReader() : fd_(::open("/proc/self/maps", O_RDONLY | O_CLOEXEC)) {}
++  ~ProcMapsReader() {
++    if (fd_ >= 0) {
++      ::close(fd_);
++    }
++  }
++  ProcMapsReader(const ProcMapsReader&) = delete;
++  ProcMapsReader& operator=(const ProcMapsReader&) = delete;
++
++  bool is_open() const { return fd_ >= 0; }
++
++  std::ptrdiff_t operator()(char* buffer, size_t capacity) {
++    for (;;) {
++      const ssize_t n = ::read(fd_, buffer, capacity);
++      if (n < 0 && errno == EINTR) {
++        continue;
++      }
++      return static_cast<std::ptrdiff_t>(n);
++    }
++  }
++
++ private:
++  int fd_;
++};
+ 
+ // Find the mapping entry in /proc/self/maps that contains the given address
+ static bool FindEntryForAddress(void* address, LinuxMapEntry& out_entry) {
+-  const uintptr_t addr = reinterpret_cast<uintptr_t>(address);
+-  std::ifstream maps("/proc/self/maps");
++  ProcMapsReader maps;
+   if (!maps.is_open())
+     return false;
+-  std::string line;
+-  while (std::getline(maps, line)) {
+-    LinuxMapEntry e;
+-    if (!ParseProcMapsLine(line, e))
+-      continue;
+-    if (addr >= e.start && addr < e.end) {
+-      out_entry = e;
+-      return true;
+-    }
+-  }
+-  return false;
++  return detail::FindProcMapsEntry(maps, reinterpret_cast<uintptr_t>(address), out_entry);
+ }
+ 
+ // Check if [base, base+length) is fully covered by existing mappings (no gaps)
+@@ -185,25 +187,10 @@ static bool IsRangeFullyMapped(void* base_address, size_t length) {
+     return false;
+   }
+ 
+-  std::ifstream maps("/proc/self/maps");
++  ProcMapsReader maps;
+   if (!maps.is_open())
+     return false;
+-
+-  uintptr_t cursor = begin;
+-  std::string line;
+-  while (std::getline(maps, line)) {
+-    LinuxMapEntry e;
+-    if (!ParseProcMapsLine(line, e))
+-      continue;
+-    if (e.end <= cursor)
+-      continue;
+-    if (e.start > cursor)
+-      return false;  // gap found
+-    cursor = e.end;
+-    if (cursor >= end)
+-      return true;
+-  }
+-  return cursor >= end;
++  return detail::IsProcMapsRangeMapped(maps, begin, end);
+ }
+ 
+ // Convert /proc/self/maps permission chars to PageAccess
+diff --git a/src/core/proc_maps.h b/src/core/proc_maps.h
+new file mode 100644
+index 0000000..3d961cc
+--- /dev/null
++++ b/src/core/proc_maps.h
+@@ -0,0 +1,162 @@
++/**
++ * Scanner for the /proc/<pid>/maps text format.
++ *
++ * QueryProtect() runs inside the guest write-watch fault handler, so the cost
++ * of one query is paid on every watched-page fault. The scanner therefore
++ * avoids heap allocation and stdio, stops as soon as the answer is known (the
++ * kernel lists mappings in ascending address order) and only needs a small
++ * fixed buffer, which keeps it usable on a signal stack.
++ *
++ * The reader is injected so the logic can be tested without a live process.
++ */
++
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++
++namespace rex::memory::detail {
++
++struct ProcMapsEntry {
++  uintptr_t start = 0;
++  uintptr_t end = 0;
++  char perms[5] = {};
++};
++
++namespace proc_maps_internal {
++
++inline int HexValue(char c) {
++  if (c >= '0' && c <= '9') return c - '0';
++  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++  return -1;
++}
++
++// Parses 1-16 hex digits; stops at the first non-hex character.
++inline bool ParseHex(const char* text, size_t length, size_t& pos, uint64_t& value) {
++  value = 0;
++  size_t digits = 0;
++  while (pos < length) {
++    const int digit = HexValue(text[pos]);
++    if (digit < 0) break;
++    if (++digits > 16) return false;
++    value = (value << 4) | static_cast<uint64_t>(digit);
++    ++pos;
++  }
++  return digits != 0;
++}
++
++}  // namespace proc_maps_internal
++
++// Parses "<start>-<end> <perms> ..." and ignores the remainder of the line.
++// Matches the former sscanf("%llx-%llx %4s") contract: all three fields are
++// required and the range must be non-empty.
++inline bool ParseProcMapsLine(const char* line, size_t length, ProcMapsEntry& out) {
++  out = ProcMapsEntry{};
++  size_t pos = 0;
++  uint64_t start = 0;
++  uint64_t end = 0;
++  if (!proc_maps_internal::ParseHex(line, length, pos, start)) return false;
++  if (pos >= length || line[pos] != '-') return false;
++  ++pos;
++  if (!proc_maps_internal::ParseHex(line, length, pos, end)) return false;
++  if (pos >= length || line[pos] != ' ') return false;
++  ++pos;
++  size_t perm_count = 0;
++  while (pos < length && perm_count < 4 && line[pos] != ' ' && line[pos] != '\t' &&
++         line[pos] != '\r') {
++    out.perms[perm_count++] = line[pos++];
++  }
++  if (perm_count == 0 || start >= end) return false;
++  out.start = static_cast<uintptr_t>(start);
++  out.end = static_cast<uintptr_t>(end);
++  return true;
++}
++
++// Calls visit(entry) for each parsed mapping in file order until it returns
++// false or the source ends. read(buffer, capacity) returns the number of bytes
++// produced, 0 at end of file or a negative value on error (which stops the
++// scan). Lines longer than the internal buffer still deliver their prefix once
++// and the remainder is skipped.
++template <typename Read, typename Visit>
++void ForEachProcMapsEntry(Read&& read, Visit&& visit) {
++  constexpr size_t kCapacity = 4096;
++  char buffer[kCapacity];
++  size_t held = 0;
++  bool skipping = false;  // discarding the tail of an over-long line
++  ProcMapsEntry entry;
++  for (;;) {
++    const std::ptrdiff_t produced = read(buffer + held, kCapacity - held);
++    if (produced < 0) return;
++    const bool end_of_file = produced == 0;
++    held += static_cast<size_t>(produced);
++
++    size_t pos = 0;
++    while (pos < held) {
++      const void* newline = std::memchr(buffer + pos, '\n', held - pos);
++      if (!newline) break;
++      const size_t line_end = static_cast<size_t>(static_cast<const char*>(newline) - buffer);
++      if (skipping) {
++        skipping = false;
++      } else if (ParseProcMapsLine(buffer + pos, line_end - pos, entry) && !visit(entry)) {
++        return;
++      }
++      pos = line_end + 1;
++    }
++
++    if (end_of_file) {
++      if (!skipping && pos < held && ParseProcMapsLine(buffer + pos, held - pos, entry)) {
++        visit(entry);
++      }
++      return;
++    }
++
++    held -= pos;
++    std::memmove(buffer, buffer + pos, held);
++    if (held == kCapacity) {
++      if (!skipping) {
++        if (ParseProcMapsLine(buffer, held, entry) && !visit(entry)) return;
++        skipping = true;
++      }
++      held = 0;
++    }
++  }
++}
++
++// Finds the mapping containing `address`. Mappings are sorted, so the scan
++// ends at the first entry that starts above it.
++template <typename Read>
++bool FindProcMapsEntry(Read&& read, uintptr_t address, ProcMapsEntry& out) {
++  bool found = false;
++  ForEachProcMapsEntry(read, [&](const ProcMapsEntry& entry) {
++    if (address >= entry.start && address < entry.end) {
++      out = entry;
++      found = true;
++      return false;
++    }
++    return entry.start <= address;
++  });
++  return found;
++}
++
++// True when [begin, end) is covered by adjacent mappings with no gap.
++template <typename Read>
++bool IsProcMapsRangeMapped(Read&& read, uintptr_t begin, uintptr_t end) {
++  if (begin >= end) return false;
++  uintptr_t cursor = begin;
++  bool mapped = false;
++  ForEachProcMapsEntry(read, [&](const ProcMapsEntry& entry) {
++    if (entry.end <= cursor) return true;
++    if (entry.start > cursor) return false;  // gap
++    cursor = entry.end;
++    if (cursor >= end) {
++      mapped = true;
++      return false;
++    }
++    return true;
++  });
++  return mapped;
++}
++
++}  // namespace rex::memory::detail

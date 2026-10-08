@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.25)
+project(superman_runtime_tests LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(SR_ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
+set(SR_SDK "${SR_ROOT}/.references/rexglue-sdk")
+# Header-only checks of runtime internals; no private PC sources or game data.
+add_executable(test_proc_maps "${SR_ROOT}/tests/native/test_proc_maps.cpp")
+target_include_directories(test_proc_maps PRIVATE "${SR_SDK}/src")
+target_compile_options(test_proc_maps PRIVATE -Wall -Wextra)

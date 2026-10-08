@@ -1,4 +1,4 @@
-param([ValidateSet('source','contract','frontend','shaders','commands','provider','bootstrap','filter','pipeline','allocations','composition')][string]$Suite='source', [string]$Device, [string]$VertexShader, [string]$PixelShader)
+param([ValidateSet('source','contract','frontend','shaders','commands','provider','bootstrap','filter','pipeline','allocations','composition','runtime')][string]$Suite='source', [string]$Device, [string]$VertexShader, [string]$PixelShader)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 Push-Location $root
@@ -6,6 +6,21 @@ try {
     if($Suite -eq 'source') {
         python -m unittest discover -s tests -p test_prepare_native_renderer.py
         if($LASTEXITCODE -ne 0){throw 'Native source preparation tests failed.'}
+    } elseif($Suite -eq 'runtime') {
+        if(-not $Device){throw 'Native ARM64 suites require an Android -Device serial.'}
+        $sdk=Join-Path $root '.tools/android-sdk'
+        $build=Join-Path $root '.tools/runtime-tests-arm64'
+        cmake -S (Join-Path $root 'native/runtime-tests') -B $build -G Ninja "-DCMAKE_TOOLCHAIN_FILE=$sdk/ndk/27.2.12479018/build/cmake/android.toolchain.cmake" "-DCMAKE_MAKE_PROGRAM=$sdk/cmake/3.22.1/bin/ninja.exe" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-33 -DANDROID_STL=c++_static -DCMAKE_BUILD_TYPE=Release
+        if($LASTEXITCODE -ne 0){throw 'Runtime test CMake configuration failed.'}
+        cmake --build $build --target test_proc_maps
+        if($LASTEXITCODE -ne 0){throw 'Runtime test compilation failed.'}
+        $adb=Join-Path $sdk 'platform-tools/adb.exe'
+        $remote='/data/local/tmp/sr-runtime-tests'
+        & $adb -s $Device shell mkdir -p $remote
+        & $adb -s $Device push (Join-Path $build 'test_proc_maps') "$remote/"
+        if($LASTEXITCODE -ne 0){throw 'Runtime test upload failed.'}
+        & $adb -s $Device shell "chmod 700 $remote/test_proc_maps && $remote/test_proc_maps"
+        if($LASTEXITCODE -ne 0){throw 'Runtime test test_proc_maps failed on device.'}
     } elseif($Suite -in @('contract','frontend','shaders','commands','provider','bootstrap','filter','pipeline','allocations','composition')) {
         if(-not $Device){throw 'Native ARM64 suites require an Android -Device serial.'}
         $sdk=Join-Path $root '.tools/android-sdk'
