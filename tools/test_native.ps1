@@ -10,17 +10,23 @@ try {
         if(-not $Device){throw 'Native ARM64 suites require an Android -Device serial.'}
         $sdk=Join-Path $root '.tools/android-sdk'
         $build=Join-Path $root '.tools/runtime-tests-arm64'
-        cmake -S (Join-Path $root 'native/runtime-tests') -B $build -G Ninja "-DCMAKE_TOOLCHAIN_FILE=$sdk/ndk/27.2.12479018/build/cmake/android.toolchain.cmake" "-DCMAKE_MAKE_PROGRAM=$sdk/cmake/3.22.1/bin/ninja.exe" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-33 -DANDROID_STL=c++_static -DCMAKE_BUILD_TYPE=Release
+        $runtime=Join-Path $root '.references/rexglue-sdk/out/linux-arm64/librexruntime.so'
+        cmake -S (Join-Path $root 'native/runtime-tests') -B $build -G Ninja "-DCMAKE_TOOLCHAIN_FILE=$sdk/ndk/27.2.12479018/build/cmake/android.toolchain.cmake" "-DCMAKE_MAKE_PROGRAM=$sdk/cmake/3.22.1/bin/ninja.exe" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-33 -DANDROID_STL=c++_shared -DCMAKE_BUILD_TYPE=Release "-DSR_RUNTIME_LIBRARY=$runtime"
         if($LASTEXITCODE -ne 0){throw 'Runtime test CMake configuration failed.'}
-        cmake --build $build --target test_proc_maps
+        $targets=@('test_proc_maps','test_region_query')
+        cmake --build $build --target @targets
         if($LASTEXITCODE -ne 0){throw 'Runtime test compilation failed.'}
         $adb=Join-Path $sdk 'platform-tools/adb.exe'
         $remote='/data/local/tmp/sr-runtime-tests'
         & $adb -s $Device shell mkdir -p $remote
-        & $adb -s $Device push (Join-Path $build 'test_proc_maps') "$remote/"
+        $files=@($runtime,(Join-Path $sdk 'ndk/27.2.12479018/toolchains/llvm/prebuilt/windows-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so'))
+        $files+=@($targets | ForEach-Object {Join-Path $build $_})
+        & $adb -s $Device push @files "$remote/"
         if($LASTEXITCODE -ne 0){throw 'Runtime test upload failed.'}
-        & $adb -s $Device shell "chmod 700 $remote/test_proc_maps && $remote/test_proc_maps"
-        if($LASTEXITCODE -ne 0){throw 'Runtime test test_proc_maps failed on device.'}
+        foreach($target in $targets){
+            & $adb -s $Device shell "chmod 700 $remote/$target && cd $remote && LD_LIBRARY_PATH=. TMPDIR=/data/local/tmp ./$target"
+            if($LASTEXITCODE -ne 0){throw "Runtime test $target failed on device."}
+        }
     } elseif($Suite -in @('contract','frontend','shaders','commands','provider','bootstrap','filter','pipeline','allocations','composition')) {
         if(-not $Device){throw 'Native ARM64 suites require an Android -Device serial.'}
         $sdk=Join-Path $root '.tools/android-sdk'
