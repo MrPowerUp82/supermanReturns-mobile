@@ -1,0 +1,16 @@
+ Helper float32 com prova numérica no GPU
+
+**Interfaces HLSL:** `float4 srFilter2DLevel(Texture2D<float4> texture, SamplerState taps, float2 uv, uint level, bool linear)`; `float4 srFilter2D(Texture2D<float4> texture, SamplerState taps, float2 uv, float lod, uint samplerWord)`. O helper de nível é puro quanto a LOD; a função externa escolhe min/mag e mip conforme metadata. A wrapper de produção `tfetch2D` fornece LOD não clamped e UV com o offset/escala atuais antes de chamar o helper.
+
+**Interfaces de teste:** executável `test_float_filter_gpu`, suíte `filter`. O teste cria instance/device Vulkan headless via loader, seleciona fila com suporte a compute/graphics e não depende de superfície Android. Usa o mesmo helper de produção em um shader de probe com LOD explícito e uma passagem fragment offscreen para testar a consulta de LOD da wrapper. Readback em buffer host-visible depois de fence com timeout de 5 segundos; referência CPU usa double, indexação e pesos próprios.
+
+- [ ] Criar o teste GPU: consultar propriedades reais de R32_SFLOAT, registrar falta de filtro linear e reproduzir RED da seleção antiga. Não considerar ausência de aparelho como PASS.
+- [ ] Criar casos `gpu_preserves_float32_precision`, `gpu_edges_and_odd_mips`, `gpu_min_mag_and_mip_selection`. Usar textura 5×3 com mip chain, valores como `1.0001220703125` e `1.000244140625` e valores negativos. Amostrar centros, pesos de 0.5 e 0.25, coordenadas negativas/maiores que 1, clamp-edge, repeat, mirrored-repeat e border zero.
+- [ ] Comparar cada componente com tolerância absoluta `2e-6 * max(1, abs(expected))`; exigir que os valores próximos permaneçam distintos. Asserções de nível exato para base-map e ponto; LOD fracionário para mip linear. Exercitar as duas combinações min/mag mistas em LOD positivo e negativo.
+- [ ] Compilar/executar a suíte e registrar RED antes do helper. O runner deve propagar falha de upload, shader compile, VkResult, timeout e comparação numérica.
+- [ ] Implementar taps nos centros dos texels: para filtro linear, partir de `uv * dimensions - 0.5`, consultar quatro texels com o sampler pontual e combinar em float32. Para ponto, uma amostra. Consultar dimensões do mip efetivo, preservar modos de endereço e clamp dos níveis válidos.
+- [ ] Implementar mip point por `floor(clamp(lod, 0, levels-1) + 0.5)`, linear pelos dois níveis vizinhos e o peso fracionário, base-map pelo nível 0. LOD positivo seleciona min; zero ou negativo seleciona mag. Preservar offset e conversão gamma depois da interpolação. Operações que precisam de derivadas só podem ser usadas nos estágios que as suportam; compilação inválida deve falhar, nunca substituir por LOD inventado.
+- [ ] Na cópia common, selecionar o helper pelo bit 5 e mascarar todas as referências à array de samplers. Caminho de hardware continua usando os filtros originais. Configurações de bicubic/escala incompatíveis com a prova atual devem ser rejeitadas explicitamente na tarefa 3.
+- [ ] Rodar `tools/test_native.ps1 -Suite filter -Device RXCWB05KQMX`; exigir readback GREEN, resultados registrados e zero erro de validação quando a camada estiver disponível. Ausência da camada deve ser registrada.
+- [ ] Commitar helper, probe, testes e runner após GREEN.
+
