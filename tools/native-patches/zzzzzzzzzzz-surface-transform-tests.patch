@@ -1,0 +1,42 @@
+--- a/tests/vulkan/test_swapchain.cpp
++++ b/tests/vulkan/test_swapchain.cpp
+@@ -5,6 +5,8 @@
+ uint32_t creates = 0, destroys = 0;
+ VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
+ VkSharingMode sharing;
++VkSurfaceTransformFlagBitsKHR transform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,selected_transform;
++VkSurfaceTransformFlagsKHR supported_transforms=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+ VkExtent2D surface_extent{UINT32_MAX, UINT32_MAX};
+ std::vector<uint32_t> families;
+ template <class T> T H() {
+@@ -16,6 +18,7 @@
+                          VkSurfaceCapabilitiesKHR *c) {
+   *c = {};
+   c->currentExtent = surface_extent;
++  c->currentTransform=transform;c->supportedTransforms=supported_transforms;
+   c->minImageExtent = {1, 1};
+   c->maxImageExtent = {4096, 4096};
+   c->minImageCount = 2;
+@@ -39,7 +42,7 @@
+ }
+ VkResult VKAPI_CALL Create(VkDevice, const VkSwapchainCreateInfoKHR *ci,
+                            const VkAllocationCallbacks *, VkSwapchainKHR *h) {
+-  sharing = ci->imageSharingMode;
++  sharing = ci->imageSharingMode;selected_transform=ci->preTransform;
+   families.clear();
+   if (ci->queueFamilyIndexCount)
+     families.assign(ci->pQueueFamilyIndices,
+@@ -138,3 +141,13 @@
+   SR_CHECK(s.Recreate(c, {1280, 720}, true, e));
+   SR_CHECK(s.handle != VK_NULL_HANDLE);
+ }
++
++SR_TEST(unrotated_compositor_leaves_display_rotation_to_wsi) {
++  Context c(Fake());c.device=H<VkDevice>();Swapchain s;Error e;
++  transform=VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR;supported_transforms=511;
++  surface_extent={2340,1080};
++  SR_CHECK(s.Recreate(c,{2340,1080},true,e));
++  SR_CHECK_EQ(selected_transform,VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR);
++  SR_CHECK_EQ(s.choice.extent.width,2340u);SR_CHECK_EQ(s.choice.extent.height,1080u);
++  transform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;supported_transforms=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;surface_extent={UINT32_MAX,UINT32_MAX};
++}

@@ -1,0 +1,32 @@
+--- a/port/src/graphics/vulkan/resources.h
++++ b/port/src/graphics/vulkan/resources.h
+@@ -47,6 +47,7 @@
+   uint64_t version=0;
+   uint64_t held_serial=0;  // submission whose list already holds this resource (SubmissionResources::Hold)
+   bool coherent=false;
++  bool transient=false;  // only per-submission slices bypass descriptor caching
+   void* mapped=nullptr;  // persistent mapping of host-visible allocations
+   ~BufferResource();
+ };
+--- a/port/src/graphics/vulkan/resources.cpp
++++ b/port/src/graphics/vulkan/resources.cpp
+@@ -205,7 +205,7 @@
+ std::shared_ptr<BufferResource> ResourceStore::Suballocate(Arena& arena,VkDeviceSize size,VkDeviceSize alignment,Error& e) {
+   Placement at;if(!Place(arena,size,alignment,at,e)) return {};
+   auto v=std::make_shared<BufferResource>();v->context=&c_;v->owner=at.chunk;v->handle=at.chunk->handle;v->memory=at.chunk->memory;
+-  v->size=size;v->allocation=size;v->offset=at.offset;v->coherent=at.chunk->coherent;v->mapped=at.chunk->mapped?static_cast<std::byte*>(at.chunk->mapped)+at.offset:nullptr;
++  v->transient=&arena!=&device_;v->size=size;v->allocation=size;v->offset=at.offset;v->coherent=at.chunk->coherent;v->mapped=at.chunk->mapped?static_cast<std::byte*>(at.chunk->mapped)+at.offset:nullptr;
+   return v;
+ }
+ VkDeviceSize ResourceStore::TransientAlignment() const {
+--- a/port/src/graphics/vulkan/descriptor_sets.cpp
++++ b/port/src/graphics/vulkan/descriptor_sets.cpp
+@@ -64,7 +64,7 @@
+   // repeat: they are written but not cached, so they cannot pin arena chunks.
+   bool complete=true,cacheable=true;
+   for(uint32_t slot=0;slot<32;++slot) {
+-    if(bindings.vertex_buffers[slot]!=last_buffer) {auto* b=store.FindBuffer(bindings.vertex_buffers[slot]);buffer_ptr=b?b->get():nullptr;last_buffer=bindings.vertex_buffers[slot];if(b && (*b)->owner) cacheable=false;}
++    if(bindings.vertex_buffers[slot]!=last_buffer) {auto* b=store.FindBuffer(bindings.vertex_buffers[slot]);buffer_ptr=b?b->get():nullptr;last_buffer=bindings.vertex_buffers[slot];if(b && (*b)->transient) cacheable=false;}
+     push(uint64_t(reinterpret_cast<uintptr_t>(buffer_ptr)));complete&=buffer_ptr!=nullptr;
+     for(uint32_t dimension=0;dimension<3;++dimension) {auto* t=texture_key(dimension,bindings.textures[dimension][slot]);push(uint64_t(reinterpret_cast<uintptr_t>(t)));complete&=t!=nullptr;}
+     // Only the sampler/filter bits of texture slots matter. Other slots hold

@@ -1,0 +1,21 @@
+--- a/port/src/graphics/vulkan/game_pipeline.cpp
++++ b/port/src/graphics/vulkan/game_pipeline.cpp
+@@ -202,6 +202,18 @@
+   if(layout_ || layouts.size()!=4) return Fail(e,"Invalid/already initialized pipeline layout");
+   VkPipelineLayoutCreateInfo l{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};l.setLayoutCount=uint32_t(layouts.size());l.pSetLayouts=layouts.data();
+   if(!Check(c_.f.vkCreatePipelineLayout(c_.device,&l,nullptr,&layout_),"Game pipeline layout",e)) return false;
++#if defined(__ANDROID__)
++  // S22 Adreno 730 driver 0x80267062 crashes in libllvm-glnext when the
++  // same shader pair is compiled with another color-write mask through a
++  // shared VkPipelineCache. Reproduced with a fresh cache and valid SPIR-V;
++  // all 64 mask/depth variants compile with VK_NULL_HANDLE. Keep the renderer
++  // pipeline-object cache, but quarantine this exact driver's compiler cache.
++  if(c_.properties.vendorID==0x5143 && c_.properties.deviceID==0x07030001 &&
++     c_.properties.driverVersion==0x80267062) {
++    c_.Log("Driver pipeline cache disabled for Adreno 730 driver 0x80267062 (shader variant compiler crash); pipeline objects remain cached");
++    e={};return true;
++  }
++#endif
+   std::vector<uint8_t> initial;auto expected=CacheHeader(c_);
+   if(!path.empty()) {std::ifstream file(path,std::ios::binary|std::ios::ate);auto size=file.tellg();if(file && size>=std::streamoff(expected.size()*4+32) && size<64*1024*1024) {file.seekg(0);std::vector<uint32_t> header(expected.size());file.read(reinterpret_cast<char*>(header.data()),header.size()*4);if(header==expected) {initial.resize(size_t(size)-header.size()*4);if(!file.read(reinterpret_cast<char*>(initial.data()),initial.size())) initial.clear();}}}
+   // Vulkan's own header must agree too; never pass arbitrary/truncated bytes to the driver.

@@ -1,0 +1,37 @@
+--- a/port/src/graphics/vulkan/swapchain.cpp
++++ b/port/src/graphics/vulkan/swapchain.cpp
+@@ -22,7 +22,7 @@
+   if (handle)
+     f.vkDestroySwapchainKHR(c.device, handle, nullptr);
+   handle = VK_NULL_HANDLE;
+-  choice = {};
++  choice = {};allow_suboptimal=false;
+ }
+ bool Swapchain::Recreate(Context &c, VkExtent2D requested, bool vsync,
+                          Error &e) {
+@@ -116,6 +116,7 @@
+   // apply the display transform instead of claiming it is already applied.
+   ci.preTransform = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+       ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform;
++  allow_suboptimal=ci.preTransform!=caps.currentTransform;
+   c.Log("swapchain pre_transform="+std::to_string(ci.preTransform));
+   ci.compositeAlpha = alpha;
+   ci.presentMode = choice.present_mode;
+--- a/port/src/graphics/vulkan/frame_loop.cpp
++++ b/port/src/graphics/vulkan/frame_loop.cpp
+@@ -187,7 +187,14 @@
+   if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR && r != VK_ERROR_OUT_OF_DATE_KHR)
+     return fail(r, "QueuePresent");
+   if(!prepared) {failed_=true;e=std::move(preparation_error);return FrameOutcome::kFailed;}
+-  if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR || suboptimal)
++  if ((r == VK_SUBOPTIMAL_KHR || suboptimal) && presented==1)
++    c.Log("swapchain suboptimal acquire="+std::to_string(suboptimal)+" present="+std::to_string(r)+
++          " intentional_wsi_rotation="+std::to_string(s.allow_suboptimal));
++  // Android can continuously report SUBOPTIMAL for an intentional WSI
++  // rotation. Recreating an identical swapchain cannot improve that state.
++  // OUT_OF_DATE and surface resize callbacks still require recreation.
++  if (r == VK_ERROR_OUT_OF_DATE_KHR ||
++      ((r == VK_SUBOPTIMAL_KHR || suboptimal) && !s.allow_suboptimal))
+     return FrameOutcome::kRecreate;
+   return FrameOutcome::kPresented;
+ }

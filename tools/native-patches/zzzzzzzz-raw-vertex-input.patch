@@ -1,0 +1,18 @@
+--- a/port/src/graphics/vulkan/game_pipeline.cpp
++++ b/port/src/graphics/vulkan/game_pipeline.cpp
+@@ -116,6 +116,15 @@
+     VkVertexInputAttributeDescription attribute{input.location,31,VK_FORMAT_R32G32B32A32_SFLOAT,0};uint32_t stride=0;
+     if(found!=draw.attributes.end()) {
+       attribute.binding=draw.inline_vertices?0:found->stream;attribute.format=VertexFormat(found->type);attribute.offset=found->offset;
++      // Packed normal helpers receive uint and use asfloat for uncompressed float32 declarations.
++      // Fetch the original bits, rather than converting floats numerically to integers.
++      if(input.type.starts_with("uint")) switch(attribute.format) {
++      case VK_FORMAT_R32_SFLOAT:attribute.format=VK_FORMAT_R32_UINT;break;
++      case VK_FORMAT_R32G32_SFLOAT:attribute.format=VK_FORMAT_R32G32_UINT;break;
++      case VK_FORMAT_R32G32B32_SFLOAT:attribute.format=VK_FORMAT_R32G32B32_UINT;break;
++      case VK_FORMAT_R32G32B32A32_SFLOAT:attribute.format=VK_FORMAT_R32G32B32A32_UINT;break;
++      default:break;
++      }
+       if(draw.inline_vertices) stride=draw.inline_stride;
+       else {auto stream=std::find_if(draw.streams.begin(),draw.streams.end(),[&](auto& s){return s.stream==found->stream;});if(stream==draw.streams.end()) return Fail(e,"Vertex input stream absent");stride=stream->stride;}
+       if(attribute.binding>=31 || attribute.format==VK_FORMAT_UNDEFINED || !stride) return Fail(e,"Vertex input type/binding/stride unsupported");

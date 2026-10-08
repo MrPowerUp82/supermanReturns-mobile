@@ -1,5 +1,15 @@
 # Migração para Android
 
+Estado atual: o alvo `native/game` usa o core Vulkan nativo do PC. A extensão
+float32 e o contrato v2 passaram nas suítes do S22 e estão no APK compilado.
+O crash de compilação no driver Qualcomm foi isolado e contornado para o
+driver exato do S22. Arena GPU, NORMAL1, orientação, política SUBOPTIMAL e LUT
+gamma corrigidos e testados. APK659c0067 chegou a Metropolis; movimento, câmera,
+voo, pouso, pausa e retorno do app observados. Combate, qualidade do áudio e
+sessão600s seguem em validação. Ver
+[relatório atual](evidence/s22-native-float-filter-2026-10-07.md).
+As descrições posteriores do placeholder e da factory Xenos são históricas.
+
 Alvo informado pelo usuário: Galaxy S22 Snapdragon. Confirmar a versão do
 Android durante teste real; o APK exige Android 13 ou superior. Em 2026-10-07,
 o aparelho SM-S901E foi conectado por ADB: Android 16, SoC SM8450, Adreno 730.

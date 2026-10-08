@@ -1,0 +1,22 @@
+--- a/port/src/graphics/vulkan/composition.cpp
++++ b/port/src/graphics/vulkan/composition.cpp
+@@ -28,13 +28,16 @@
+   TransientSlice constants;if(!resources.MapTransient(sizeof(guest::ConstantSnapshot),constants,e)) return {};
+   DrawBindings bindings;if(!BuildBindings(draw,constants.data,bindings,e)) return {};
+   bindings.textures[0][0]=source_id;bindings.texture_indices[0]=0;
++  // Linear clamp to edge prevents filtering beyond the frontbuffer at borders.
++  draw.texture_fetch[0][0]=(2u<<10)|(2u<<13)|(2u<<16);draw.texture_fetch[0][3]=(1u<<19)|(1u<<21);
++  if(!descriptors_.Prepare(bindings,draw.texture_fetch,resources,resources.CurrentSerial(),constants,result->descriptors,e)) return {};
++  // Presentation has a private shared-constant layout. Restore its gamma LUT
++  // after generic guest sampler metadata, then flush the final block.
+   std::byte* shared=constants.data+kSharedConstantsOffset;
+   std::memcpy(shared,gamma.data(),gamma.size_bytes());
+   uint32_t options[]{uint32_t(gamma_enabled),uint32_t(pass.formats[0]==VK_FORMAT_R8G8B8A8_SRGB || pass.formats[0]==VK_FORMAT_B8G8R8A8_SRGB)};
+   std::memcpy(shared+1024,options,sizeof(options));
+-  // Linear clamp to edge prevents filtering beyond the frontbuffer at borders.
+-  draw.texture_fetch[0][0]=(2u<<10)|(2u<<13)|(2u<<16);draw.texture_fetch[0][3]=(1u<<19)|(1u<<21);
+-  if(!descriptors_.Prepare(bindings,draw.texture_fetch,resources,resources.CurrentSerial(),constants,result->descriptors,e)) return {};
++  if(!resources.FlushTransient(constants,e)) return {};
+   result->pipeline=pipelines_.Acquire(draw,pass,vertex_,&pixel_,resources.CurrentSerial(),e);if(!result->pipeline) return {};
+   e={};return result;
+ }

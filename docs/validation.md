@@ -1,5 +1,25 @@
 # Validação local — 2026-10-07
 
+## Retomada com renderer PC nativo
+
+A build atual seleciona o renderer nativo Vulkan do PC e inclui o filtro
+float32 v2. Sete suítes no S22 passaram, incluindo 34.560 comparações GPU.
+APK e biblioteca foram instalados e verificados. O boot v2 passou do pacote34,
+mostrou loading distorcido e caiu durante vkCreateGraphicsPipelines no driver
+Qualcomm. O quirk específico do cache permitiu avançar; a camada ativa revelou
+limite de4096alocações e entrada NORMAL1 incompatível. Arena GPU:5001valores
+verificados por readback em3alocações (teto32). Contrato de entrada e92testes
+Vulkan passaram; filtro/cache foram repetidos. Corrigidas orientação,
+recriação repetida por SUBOPTIMAL e sobrescrita da LUT gamma. O compositor real
+passou1024comparações GPU. APK659c0067 chegou a Metropolis no S22; movimento
+e câmera responderam ao touch. Voo, pouso, combate, áudio e ciclo de vida
+seguem em validação; a coleta de600segundos está em andamento.
+**Gameplay ainda não aprovada.** Ver
+[relatório atual](evidence/s22-native-float-filter-2026-10-07.md).
+
+Os resultados de loading, pausa e memória nas seções históricas abaixo pertencem
+ao backend anterior e não validam o renderer nativo atual.
+
 ## Resultado
 
 - `tools/build.ps1`: `assembleDebug` e `lintDebug` aprovados.

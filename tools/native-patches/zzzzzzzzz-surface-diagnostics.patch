@@ -1,0 +1,13 @@
+--- a/port/src/graphics/vulkan/swapchain.cpp
++++ b/port/src/graphics/vulkan/swapchain.cpp
+@@ -72,6 +72,10 @@
+     return false;
+   }
+   choice = *selected;
++  c.Log("swapchain requested="+std::to_string(requested.width)+"x"+std::to_string(requested.height)+
++        " current="+std::to_string(caps.currentExtent.width)+"x"+std::to_string(caps.currentExtent.height)+
++        " selected="+std::to_string(choice.extent.width)+"x"+std::to_string(choice.extent.height)+
++        " transform="+std::to_string(caps.currentTransform)+" supported_transforms="+std::to_string(caps.supportedTransforms));
+   if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
+     e = {"Surface usage", VK_ERROR_FORMAT_NOT_SUPPORTED,
+          "Surface lacks color attachment support"};

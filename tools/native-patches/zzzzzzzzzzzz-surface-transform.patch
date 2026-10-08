@@ -1,0 +1,15 @@
+--- a/port/src/graphics/vulkan/swapchain.cpp
++++ b/port/src/graphics/vulkan/swapchain.cpp
+@@ -112,7 +112,11 @@
+     ci.queueFamilyIndexCount = 2;
+     ci.pQueueFamilyIndices = families;
+   }
+-  ci.preTransform = caps.currentTransform;
++  // The compositor writes landscape pixels without prerotation. Let WSI
++  // apply the display transform instead of claiming it is already applied.
++  ci.preTransform = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
++      ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform;
++  c.Log("swapchain pre_transform="+std::to_string(ci.preTransform));
+   ci.compositeAlpha = alpha;
+   ci.presentMode = choice.present_mode;
+   ci.clipped = VK_TRUE;

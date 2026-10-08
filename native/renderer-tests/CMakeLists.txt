@@ -58,6 +58,7 @@ target_link_options(test_native_provider PRIVATE -Wl,--gc-sections)
 
 set(SR_VULKAN_TESTS "${SR_ROOT}/.tools/pc-native/tests/vulkan")
 add_executable(test_vulkan_regressions
+ "${SR_ROOT}/tests/native/test_device_buffer_arena.cpp"
  "${SR_VULKAN_TESTS}/main.cpp"
  "${SR_VULKAN_TESTS}/test_policy.cpp"
  "${SR_VULKAN_TESTS}/test_context.cpp"
@@ -95,6 +96,10 @@ add_executable(test_float_filter_gpu "${SR_ROOT}/tests/native/test_float_filter_
 target_link_libraries(test_float_filter_gpu PRIVATE sr_vulkan_core)
 add_executable(test_texture_filter "${SR_ROOT}/tests/native/test_texture_filter.cpp")
 target_link_libraries(test_texture_filter PRIVATE sr_vulkan_core)
+add_executable(test_pipeline_cache_gpu "${SR_ROOT}/tests/native/test_pipeline_cache_gpu.cpp")
+target_link_libraries(test_pipeline_cache_gpu PRIVATE sr_vulkan_core)
+add_executable(test_device_buffer_gpu "${SR_ROOT}/tests/native/test_device_buffer_gpu.cpp")
+target_link_libraries(test_device_buffer_gpu PRIVATE sr_vulkan_core)
 set(SR_FILTER_PROBE "${CMAKE_CURRENT_BINARY_DIR}/float_filter_probe.spv")
 add_custom_command(OUTPUT "${SR_FILTER_PROBE}"
  COMMAND "${SR_VULKAN_DXC}" -spirv -fspv-target-env=vulkan1.1 -T cs_6_0 -E CSMain
@@ -118,3 +123,6 @@ foreach(stage IN ITEMS vs ps)
   VERBATIM)
  add_custom_target(filter_probe_${stage} DEPENDS "${probe}")
 endforeach()
+
+add_executable(test_composition_gpu "${SR_ROOT}/tests/native/test_composition_gpu.cpp")
+target_link_libraries(test_composition_gpu PRIVATE sr_vulkan_core)

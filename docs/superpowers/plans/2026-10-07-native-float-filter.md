@@ -67,14 +67,14 @@ estar verificada e o teste GPU estar aprovado.
 
 **Interfaces:** `prepare_native_shader_tools.py --recomp <PC> [--output <dir>] [--verify]`, saída padrão `.tools/native-shader-tools`, `source-lock.json` com revisão, hashes de entradas, patches, helper e saídas. Expor `LIBRARY_VERSION=2` nas ferramentas privadas e usar `BindingContractVersion` no loader privado. `VulkanShaderConfig` permanece precompiled-only no Android.
 
-- [ ] Escrever `test_v2_tool_snapshot`, `test_verify_detects_helper_change`, `test_incompatible_patch_preserves_previous_output`: verificar versões, hashes, detecção de alteração e staging atômico.
-- [ ] Executar `python -m unittest discover -s tests -p test_prepare_native_shader_tools.py`; registrar RED por ferramenta ausente.
-- [ ] Implementar preparação copiando `tools/shaders/*.py` e o common existente para árvore privada; aplicar patch versionado. Incorporar o conteúdo completo do helper ao common para que seu hash cubra o código consumido pelo compilador. Recusar fonte/destino sobrepostos e publicar somente após validação.
-- [ ] Adaptar as cópias de `vulkan_contract.py`, `runtime_vulkan_shader.py`, `make_vulkan_preshaders.py`, `verify_vulkan_preshaders.py`: ABI, revisão 2 e argumento de estágio quando necessário. Preservar a validação independente por reflexão e checksums; não apenas editar o header de um artefato v1.
-- [ ] Escrever `rejects_v1_and_mixed_library`: rejeitar header v1, resultado v1 dentro de header v2, estágio errado, truncamento e metadata incompatível. Atualizar fixtures válidas para v2.
-- [ ] Rodar testes de shaders/bootstrap e registrar RED; modificar `binding_contract.h` e `vulkan_shader_service.cpp` via patch privado para exigir revisão 2. Garantir que biblioteca incompatível bloqueia a factory antes de Resume.
-- [ ] Rodar testes Python e `tools/test_native.ps1 -Suite shaders -Device RXCWB05KQMX`, `-Suite bootstrap`; exigir GREEN. Preparar/`--verify` snapshots e conferir checkout PC intacto.
-- [ ] Commitar somente arquivos desta unidade após a verificação, sem ferramentas privadas ou dados do jogo.
+- [x] Escrever `test_v2_tool_snapshot`, `test_verify_detects_helper_change`, `test_incompatible_patch_preserves_previous_output`: verificar versões, hashes, detecção de alteração e staging atômico.
+- [x] Executar `python -m unittest discover -s tests -p test_prepare_native_shader_tools.py`; registrar RED por ferramenta ausente.
+- [x] Implementar preparação copiando `tools/shaders/*.py` e o common existente para árvore privada; aplicar patch versionado. Incorporar o conteúdo completo do helper ao common para que seu hash cubra o código consumido pelo compilador. Recusar fonte/destino sobrepostos e publicar somente após validação.
+- [x] Adaptar as cópias de `vulkan_contract.py`, `runtime_vulkan_shader.py`, `make_vulkan_preshaders.py`, `verify_vulkan_preshaders.py`: ABI, revisão 2 e argumento de estágio quando necessário. Preservar a validação independente por reflexão e checksums; não apenas editar o header de um artefato v1.
+- [x] Escrever `rejects_v1_and_mixed_library`: rejeitar header v1, resultado v1 dentro de header v2, estágio errado, truncamento e metadata incompatível. Atualizar fixtures válidas para v2.
+- [x] Rodar testes de shaders/bootstrap e registrar RED; modificar `binding_contract.h` e `vulkan_shader_service.cpp` via patch privado para exigir revisão 2. Garantir que biblioteca incompatível bloqueia a factory antes de Resume.
+- [x] Rodar testes Python e `tools/test_native.ps1 -Suite shaders -Device RXCWB05KQMX`, `-Suite bootstrap`; exigir GREEN. Preparar/`--verify` snapshots e conferir checkout PC intacto.
+- [x] Commitar somente arquivos desta unidade após a verificação, sem ferramentas privadas ou dados do jogo.
 
 ### Tarefa 2: Helper float32 com prova numérica no GPU
 
@@ -82,15 +82,15 @@ estar verificada e o teste GPU estar aprovado.
 
 **Interfaces de teste:** executável `test_float_filter_gpu`, suíte `filter`. O teste cria instance/device Vulkan headless via loader, seleciona fila com suporte a compute/graphics e não depende de superfície Android. Usa o mesmo helper de produção em um shader de probe com LOD explícito e uma passagem fragment offscreen para testar a consulta de LOD da wrapper. Readback em buffer host-visible depois de fence com timeout de 5 segundos; referência CPU usa double, indexação e pesos próprios.
 
-- [ ] Criar o teste GPU: consultar propriedades reais de R32_SFLOAT, registrar falta de filtro linear e reproduzir RED da seleção antiga. Não considerar ausência de aparelho como PASS.
-- [ ] Criar casos `gpu_preserves_float32_precision`, `gpu_edges_and_odd_mips`, `gpu_min_mag_and_mip_selection`. Usar textura 5×3 com mip chain, valores como `1.0001220703125` e `1.000244140625` e valores negativos. Amostrar centros, pesos de 0.5 e 0.25, coordenadas negativas/maiores que 1, clamp-edge, repeat, mirrored-repeat e border zero.
-- [ ] Comparar cada componente com tolerância absoluta `2e-6 * max(1, abs(expected))`; exigir que os valores próximos permaneçam distintos. Asserções de nível exato para base-map e ponto; LOD fracionário para mip linear. Exercitar as duas combinações min/mag mistas em LOD positivo e negativo.
-- [ ] Compilar/executar a suíte e registrar RED antes do helper. O runner deve propagar falha de upload, shader compile, VkResult, timeout e comparação numérica.
-- [ ] Implementar taps nos centros dos texels: para filtro linear, partir de `uv * dimensions - 0.5`, consultar quatro texels com o sampler pontual e combinar em float32. Para ponto, uma amostra. Consultar dimensões do mip efetivo, preservar modos de endereço e clamp dos níveis válidos.
-- [ ] Implementar mip point por `floor(clamp(lod, 0, levels-1) + 0.5)`, linear pelos dois níveis vizinhos e o peso fracionário, base-map pelo nível 0. LOD positivo seleciona min; zero ou negativo seleciona mag. Preservar offset e conversão gamma depois da interpolação. Operações que precisam de derivadas só podem ser usadas nos estágios que as suportam; compilação inválida deve falhar, nunca substituir por LOD inventado.
-- [ ] Na cópia common, selecionar o helper pelo bit 5 e mascarar todas as referências à array de samplers. Caminho de hardware continua usando os filtros originais. Configurações de bicubic/escala incompatíveis com a prova atual devem ser rejeitadas explicitamente na tarefa 3.
-- [ ] Rodar `tools/test_native.ps1 -Suite filter -Device RXCWB05KQMX`; exigir readback GREEN, resultados registrados e zero erro de validação quando a camada estiver disponível. Ausência da camada deve ser registrada.
-- [ ] Commitar helper, probe, testes e runner após GREEN.
+- [x] Criar o teste GPU: consultar propriedades reais de R32_SFLOAT, registrar falta de filtro linear e reproduzir RED da seleção antiga. Não considerar ausência de aparelho como PASS.
+- [x] Criar casos `gpu_preserves_float32_precision`, `gpu_edges_and_odd_mips`, `gpu_min_mag_and_mip_selection`. Usar textura 5×3 com mip chain, valores como `1.0001220703125` e `1.000244140625` e valores negativos. Amostrar centros, pesos de 0.5 e 0.25, coordenadas negativas/maiores que 1, clamp-edge, repeat, mirrored-repeat e border zero.
+- [x] Comparar cada componente com tolerância absoluta `2e-6 * max(1, abs(expected))`; exigir que os valores próximos permaneçam distintos. Asserções de nível exato para base-map e ponto; LOD fracionário para mip linear. Exercitar as duas combinações min/mag mistas em LOD positivo e negativo.
+- [x] Compilar/executar a suíte e registrar RED antes do helper. O runner deve propagar falha de upload, shader compile, VkResult, timeout e comparação numérica.
+- [x] Implementar taps nos centros dos texels: para filtro linear, partir de `uv * dimensions - 0.5`, consultar quatro texels com o sampler pontual e combinar em float32. Para ponto, uma amostra. Consultar dimensões do mip efetivo, preservar modos de endereço e clamp dos níveis válidos.
+- [x] Implementar mip point por `floor(clamp(lod, 0, levels-1) + 0.5)`, linear pelos dois níveis vizinhos e o peso fracionário, base-map pelo nível 0. LOD positivo seleciona min; zero ou negativo seleciona mag. Preservar offset e conversão gamma depois da interpolação. Operações que precisam de derivadas só podem ser usadas nos estágios que as suportam; compilação inválida deve falhar, nunca substituir por LOD inventado.
+- [x] Na cópia common, selecionar o helper pelo bit 5 e mascarar todas as referências à array de samplers. Caminho de hardware continua usando os filtros originais. Configurações de bicubic/escala incompatíveis com a prova atual devem ser rejeitadas explicitamente na tarefa 3.
+- [x] Rodar `tools/test_native.ps1 -Suite filter -Device RXCWB05KQMX`; exigir readback GREEN, resultados registrados e zero erro de validação quando a camada estiver disponível. Ausência da camada deve ser registrada.
+- [x] Commitar helper, probe, testes e runner após GREEN.
 
 ### Tarefa 3: Seleção no core e coerência dos descriptors
 
@@ -98,13 +98,13 @@ estar verificada e o teste GPU estar aprovado.
 
 `DescriptorStore::Prepare(DrawBindings& bindings, ...)` prepara metadata antes de Shared/flush e escreve os words no shared offset `128 + slot*4`. A assinatura restante permanece igual. `Sampler` recebe o fetch efetivo do plano; a chave e a validação de índices devem considerar metadata e o sampler efetivo.
 
-- [ ] Escrever `float32_2d_selects_manual_when_linear_missing`, `filterable_formats_keep_hardware`, `basemap_uses_level_zero`, `unsupported_filter_reports_context`: formato/dimensão/slot/filtros presentes no erro, saída inalterada ao falhar.
-- [ ] Cobrir estados finais: mag/min 0 ou 1; mip 0,1,2; aniso 0 ou 1 sem anisotropia efetiva. Para manual, permitir somente R32_SFLOAT/R32G32_SFLOAT/R32G32B32A32_SFLOAT em 2D. Rejeitar aniso>1, estado use-fetch não resolvido, dimensões não cobertas, formato não comprovado e flags de efeito incompatíveis.
-- [ ] Rodar a suíte e registrar RED. Implementar o plano sem converter a imagem. O sampler de taps mantém endereço e border, usa filtros nearest e desativa anisotropia; os words guardam os filtros efetivos do guest.
-- [ ] Integrar em Prepare usando consulta de propriedades por formato em cache. Verificar metadata antes da escrita dos descriptors; hardware conserva o fetch original. Propagar falhas pelo diagnóstico existente.
-- [ ] Escrever `filter_metadata_separates_cache_entries`: mesmos recursos com filtros diferentes não reutilizam o sampler errado; cache hit e miss produzem os mesmos words; textura substituída por formato diferente é reavaliada. Testar índice 31, bits reservados, dummy/non-texture e todos os slots.
-- [ ] Rodar `filter`, `provider`, `shaders`, `bootstrap` e suites afetadas de frontend/commands no S22. Atualizar fixtures privadas existentes que assumem revisão 1, sem afrouxar rejeições. `prepare_native_renderer.py --verify` deve passar.
-- [ ] Commitar patch e testes verificados; não instalar o core isoladamente.
+- [x] Escrever `float32_2d_selects_manual_when_linear_missing`, `filterable_formats_keep_hardware`, `basemap_uses_level_zero`, `unsupported_filter_reports_context`: formato/dimensão/slot/filtros presentes no erro, saída inalterada ao falhar.
+- [x] Cobrir estados finais: mag/min 0 ou 1; mip 0,1,2; aniso 0 ou 1 sem anisotropia efetiva. Para manual, permitir somente R32_SFLOAT/R32G32_SFLOAT/R32G32B32A32_SFLOAT em 2D. Rejeitar aniso>1, estado use-fetch não resolvido, dimensões não cobertas, formato não comprovado e flags de efeito incompatíveis.
+- [x] Rodar a suíte e registrar RED. Implementar o plano sem converter a imagem. O sampler de taps mantém endereço e border, usa filtros nearest e desativa anisotropia; os words guardam os filtros efetivos do guest.
+- [x] Integrar em Prepare usando consulta de propriedades por formato em cache. Verificar metadata antes da escrita dos descriptors; hardware conserva o fetch original. Propagar falhas pelo diagnóstico existente.
+- [x] Escrever `filter_metadata_separates_cache_entries`: mesmos recursos com filtros diferentes não reutilizam o sampler errado; cache hit e miss produzem os mesmos words; textura substituída por formato diferente é reavaliada. Testar índice 31, bits reservados, dummy/non-texture e todos os slots.
+- [x] Rodar `filter`, `provider`, `shaders`, `bootstrap` e suites afetadas de frontend/commands no S22. Atualizar fixtures privadas existentes que assumem revisão 1, sem afrouxar rejeições. `prepare_native_renderer.py --verify` deve passar.
+- [x] Commitar patch e testes verificados; não instalar o core isoladamente.
 
 ### Tarefa 4: Biblioteca completa, APK e retorno à validação funcional
 
@@ -132,6 +132,5 @@ integra e retoma todos os critérios funcionais originais. Os cinco Review Focus
 têm testes nas tarefas proprietárias. A nova semântica fica confinada ao word de
 sampler e à revisão v2, sem novos descriptors ou alterações de dados guest.
 
-Método preservado: Native, implementação nesta conversa. **Aguardar revisão deste
-plano antes de implementar**, conforme writing-plans. A aprovação anterior foi
-da especificação; não representa aprovação deste plano que ainda não existia.
+Método preservado: Native, implementação nesta conversa. Plano aprovado pelo usuário nesta conversa após a aprovação da especificação.
+Tarefas1–3 concluídas; tarefa4 em validação no aparelho. Código commit c082611.

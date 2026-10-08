@@ -1,0 +1,26 @@
+--- a/port/src/graphics/vulkan/swapchain.h
++++ b/port/src/graphics/vulkan/swapchain.h
+@@ -16,6 +16,7 @@
+   std::vector<VkImageView> views;
+   std::vector<VkFramebuffer> framebuffers;
+   uint64_t generation = 0;
++  bool allow_suboptimal=false;  // intentional presentation-engine rotation
+ 
+ private:
+   Context *context_ = nullptr;
+--- a/tests/vulkan/test_frame_loop.cpp
++++ b/tests/vulkan/test_frame_loop.cpp
+@@ -231,3 +231,13 @@
+       "wait:free", "retire:held", "acquire:free", "prepare:held", "submit:held", "present:held"}));
+   probed = nullptr;
+ }
++
++SR_TEST(intentional_wsi_rotation_presents_suboptimal_without_recreate_storm) {
++  Fixture f;f.s.allow_suboptimal=true;
++  acquire_result=VK_SUBOPTIMAL_KHR;present_result=VK_SUBOPTIMAL_KHR;
++  for(int i=0;i<8;++i) SR_CHECK(f.Draw()==FrameOutcome::kPresented);
++  SR_CHECK_EQ(f.loop.presented,8u);
++  acquire_result=VK_ERROR_OUT_OF_DATE_KHR;SR_CHECK(f.Draw()==FrameOutcome::kRecreate);
++  acquire_result=VK_SUCCESS;present_result=VK_ERROR_OUT_OF_DATE_KHR;SR_CHECK(f.Draw()==FrameOutcome::kRecreate);
++  present_result=VK_ERROR_DEVICE_LOST;SR_CHECK(f.Draw()==FrameOutcome::kFailed);
++}
