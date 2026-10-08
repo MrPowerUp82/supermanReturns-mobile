@@ -19,3 +19,8 @@ add_executable(test_region_query "${SR_ROOT}/tests/native/test_region_query.cpp"
 target_link_libraries(test_region_query PRIVATE sr_runtime log)
 add_executable(test_write_watch "${SR_ROOT}/tests/native/test_write_watch.cpp")
 target_link_libraries(test_write_watch PRIVATE sr_runtime log)
+add_executable(test_yield_backoff "${SR_ROOT}/tests/native/test_yield_backoff.cpp")
+target_include_directories(test_yield_backoff PRIVATE "${SR_SDK}/src")
+target_compile_options(test_yield_backoff PRIVATE -Wall -Wextra)
+add_executable(test_yield_spin "${SR_ROOT}/tests/native/test_yield_spin.cpp")
+target_link_libraries(test_yield_spin PRIVATE sr_runtime log)

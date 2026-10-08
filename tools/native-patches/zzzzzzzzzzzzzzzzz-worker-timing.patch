@@ -1,0 +1,85 @@
+diff --git a/port/src/graphics/vulkan/game_frame.cpp b/port/src/graphics/vulkan/game_frame.cpp
+index 5074e5c..e7b743f 100644
+--- a/port/src/graphics/vulkan/game_frame.cpp
++++ b/port/src/graphics/vulkan/game_frame.cpp
+@@ -1,8 +1,15 @@
+ #include "game_frame.h"
++#include <atomic>
+ #include <chrono>
+ #include <cstdlib>
+ #include <thread>
+ #include <unordered_map>
++
++namespace {
++// Profile-only (SR_VULKAN_PROFILE): time Enqueue spent blocked until the recorder finished
++// the previous frame, and time the recorder spent publishing/presenting each frame.
++std::atomic<uint64_t> g_enqueue_wait_us{0},g_publish_us{0};
++}
+ namespace superman_returns::graphics::vulkan {
+ namespace {
+ // The service hashes and compares the whole container under a mutex on every
+@@ -72,7 +79,9 @@ void GameFrame::RecorderMain() {
+     // job_pending_ stays set while recording: the producer never touches the job.
+     std::shared_ptr<TextureResource> output;Error e;
+     bool ok=RecordFrame(job_packets_,*job_swap_,output,e);
++    const auto publish_started=std::chrono::steady_clock::now();
+     if(ok && output && output_) output_(output,*job_swap_);
++    if(profiling_) g_publish_us+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-publish_started).count());
+     std::lock_guard lock(job_mutex_);
+     if(!ok) {async_error_=e;failed_=true;}
+     job_packets_.clear();job_swap_.reset();job_pending_=false;job_cv_.notify_all();
+@@ -105,7 +114,9 @@ bool GameFrame::Enqueue(guest::RenderPacket&& packet,std::shared_ptr<TextureReso
+   }
+   if(recorder_.joinable()) {
+     std::unique_lock lock(job_mutex_);
++    const auto wait_started=std::chrono::steady_clock::now();
+     job_cv_.wait(lock,[&]{return !job_pending_ || cancelled_ || stop_;});
++    if(profiling_) g_enqueue_wait_us+=uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-wait_started).count());
+     if(failed_) {e=async_error_.message.empty()?Error{"Game frame",VK_ERROR_INITIALIZATION_FAILED,"Renderer stopped"}:async_error_;return false;}
+     if(cancelled_ || stop_) {e={"Game frame",VK_ERROR_INITIALIZATION_FAILED,"Rendering cancelled"};return false;}
+     job_packets_.swap(packets_);packets_.clear();job_swap_=std::move(std::get<guest::SwapPacket>(packet));job_pending_=true;
+@@ -195,7 +206,7 @@ bool GameFrame::RecordFrame(std::vector<guest::RenderPacket>& packets_,const gue
+     if(t.frames==120) {
+       auto p=renderer_.TakeProfile();auto cache=renderer_.TakeDescriptorStats();auto avg=[&](uint64_t v) {return std::to_string(v/1000/t.frames)+"."+std::to_string(v/100/t.frames%10);};
+       auto avg_ns=[&](uint64_t v) {return std::to_string(v/1000000/t.frames)+"."+std::to_string(v/100000/t.frames%10);};
+-      c_.Log("Vulkan profile (ms/frame over 120): interval="+avg(t.interval_us)+" shaders="+avg(t.shaders_us)+" fence="+avg(t.fence_us)+" record="+avg(t.record_us)+" queue="+avg(t.queue_us)+" tail="+avg(t.tail_us)
++      c_.Log("Vulkan profile (ms/frame over 120): interval="+avg(t.interval_us)+" shaders="+avg(t.shaders_us)+" fence="+avg(t.fence_us)+" record="+avg(t.record_us)+" queue="+avg(t.queue_us)+" tail="+avg(t.tail_us)+" enqueue_wait="+avg(g_enqueue_wait_us.exchange(0))+" publish="+avg(g_publish_us.exchange(0))
+         +" | uploads="+avg_ns(p.ns[RecordProfile::kUploads])+" targets="+avg_ns(p.ns[RecordProfile::kTargets])+" textures="+avg_ns(p.ns[RecordProfile::kTextures])+" bindings="+avg_ns(p.ns[RecordProfile::kBindings])
+         +" descriptors="+avg_ns(p.ns[RecordProfile::kDescriptors])+" pipeline="+avg_ns(p.ns[RecordProfile::kPipeline])+" commands="+avg_ns(p.ns[RecordProfile::kCommands])+" resolves="+avg_ns(p.ns[RecordProfile::kResolves])+" clears="+avg_ns(p.ns[RecordProfile::kClears])
+         +" | draws="+std::to_string(p.draws/t.frames)+" packets="+std::to_string(t.packets/t.frames)+" buffer_uploads="+std::to_string(p.buffer_uploads/t.frames)+" buffer_kb="+std::to_string(p.buffer_bytes/1024/t.frames)
+diff --git a/port/src/native_renderer/native_frontend_android.cpp b/port/src/native_renderer/native_frontend_android.cpp
+index faa16e3..882f222 100644
+--- a/port/src/native_renderer/native_frontend_android.cpp
++++ b/port/src/native_renderer/native_frontend_android.cpp
+@@ -74,6 +74,9 @@ bool CpuProfiling() {
+     return false;
+   }();return enabled;
+ }
++// Worker-side timing for the CPU profile: replay decodes captured commands, sink
++// hands packets to the Vulkan frame (it blocks while the recorder is busy).
++std::atomic<uint64_t> g_worker_replay_ns{0},g_worker_sink_ns{0};
+ struct CpuTimings {
+   uint64_t capture_ns=0,wait_ns=0,execute_ns=0,prepare_ns=0,constants_ns=0,streams_ns=0,swaps=0;
+   uint64_t constant_float_ns=0,constant_slots_ns=0,texture_lookup_ns=0,texture_hash_ns=0,sampler_ns=0;
+@@ -1121,7 +1124,7 @@ void NativeFrontend::OnSwap(uint8_t* base, uint32_t front_buffer_texture, uint64
+     prev_swap_batches_ = submitted;
+   }
+   if(CpuProfiling() && front_frame_%120==0) {
+-    REXLOG_INFO("native CPU frontend (ms/frame over 120): api={} capture={:.2f} worker_wait={:.2f}",packet_sink_?"vulkan":"d3d12",front_cpu_timings.capture_ns/120000000.0,front_cpu_timings.wait_ns/120000000.0);
++    REXLOG_INFO("native CPU frontend (ms/frame over 120): api={} capture={:.2f} worker_wait={:.2f} worker_replay={:.2f} worker_sink={:.2f}",packet_sink_?"vulkan":"d3d12",front_cpu_timings.capture_ns/120000000.0,front_cpu_timings.wait_ns/120000000.0,g_worker_replay_ns.exchange(0)/120000000.0,g_worker_sink_ns.exchange(0)/120000000.0);
+     front_cpu_timings.capture_ns=front_cpu_timings.wait_ns=0;
+   }
+ }
+@@ -1201,7 +1204,12 @@ void NativeFrontend::CaptureBytes(uint8_t*,uint32_t address,uint32_t length) {
+ }
+ void NativeFrontend::Execute(uint8_t*,const WorkBatch& batch,const WorkCmd& cmd) {
+   graphics::guest::RenderPacket packet;std::string error;
++  const bool timing=CpuProfiling();
++  const auto replay_started=timing?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
+   bool ok=graphics::guest::ReplayCapturedRenderPacket(batch,cmd,mirror_,packet,error);
++  const auto sink_started=timing?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
++  if(timing) g_worker_replay_ns+=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(sink_started-replay_started).count());
++  struct SinkTimer {bool on;std::chrono::steady_clock::time_point start;~SinkTimer() {if(on) g_worker_sink_ns+=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count());}} sink_timer{timing,sink_started};
+   if(ok) {
+     ++stats_.packets_decoded;++packet_count_;
+     if(std::holds_alternative<graphics::guest::DrawPacket>(packet)){++stats_.draws;++draw_count_;}

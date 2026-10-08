@@ -1,0 +1,139 @@
+diff --git a/src/core/yield_backoff.h b/src/core/yield_backoff.h
+new file mode 100644
+index 0000000..8df2359
+--- /dev/null
++++ b/src/core/yield_backoff.h
+@@ -0,0 +1,75 @@
++/**
++ * Backoff policy for guest yield loops (NtYieldExecution / SwitchToThread).
++ *
++ * Guest code spins on SwitchToThread while it waits for work, which keeps the
++ * calling host thread runnable for as long as it waits. On a phone, where
++ * cores are few and heterogeneous, a handful of idle spinners crowd the cores
++ * that the threads doing real work need, and add heat. After a long run of
++ * rapid yields from one thread the policy asks the caller to sleep briefly
++ * instead; any other pattern keeps the plain yield.
++ *
++ * Pure logic with an injected clock so it can be tested without a thread.
++ */
++
++#pragma once
++
++#include <cstdint>
++#include <cstdlib>
++
++namespace rex::thread::detail {
++
++struct YieldBackoffConfig {
++  // 0 disables the backoff (plain sched_yield, the previous behaviour).
++  uint32_t sleep_us = 0;
++  // Rapid yields allowed in a row before the first sleep.
++  uint32_t streak = 32;
++  // Two yields further apart than this belong to different runs.
++  uint32_t gap_us = 200;
++
++  static constexpr uint32_t kMaxSleepUs = 1000;
++
++  static uint32_t ParseNumber(const char* text) {
++    if (!text || !*text) return 0;
++    char* end = nullptr;
++    const long value = std::strtol(text, &end, 10);
++    if (end == text || *end != '\0' || value <= 0) return 0;
++    return value > 0x7FFFFFFF ? 0x7FFFFFFFu : static_cast<uint32_t>(value);
++  }
++
++  // Builds the config from optional text values (environment variables).
++  // Anything missing or invalid keeps the backoff disabled or at its default.
++  static YieldBackoffConfig Parse(const char* sleep_us, const char* streak, const char* gap_us) {
++    YieldBackoffConfig config;
++    const uint32_t sleep = ParseNumber(sleep_us);
++    config.sleep_us = sleep > kMaxSleepUs ? kMaxSleepUs : sleep;
++    if (const uint32_t value = ParseNumber(streak)) config.streak = value;
++    if (const uint32_t value = ParseNumber(gap_us)) config.gap_us = value;
++    return config;
++  }
++};
++
++// Per-thread state.
++class YieldBackoff {
++ public:
++  // Records a yield at `now_ns` and returns how long to sleep instead of
++  // yielding, in microseconds (0 = just yield).
++  uint32_t OnYield(uint64_t now_ns, const YieldBackoffConfig& config) {
++    if (config.sleep_us == 0) {
++      has_last_ = false;
++      return 0;
++    }
++    const bool same_run = has_last_ && now_ns >= last_ns_ &&
++                          now_ns - last_ns_ <= uint64_t(config.gap_us) * 1000;
++    streak_ = same_run ? streak_ + 1 : 1;
++    last_ns_ = now_ns;
++    has_last_ = true;
++    return streak_ > config.streak ? config.sleep_us : 0;
++  }
++
++ private:
++  uint64_t last_ns_ = 0;
++  uint32_t streak_ = 0;
++  bool has_last_ = false;
++};
++
++}  // namespace rex::thread::detail
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+index ab2afbc..dd7ba4e 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+@@ -14,6 +14,8 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <chrono>
++#include <cstdlib>
+ #include <memory>
+ #include <vector>
+ 
+@@ -38,6 +40,12 @@
+ #include <rex/thread/atomic.h>
+ #include <rex/thread/mutex.h>
+ 
++#include "../../core/yield_backoff.h"
++
++#if REX_PLATFORM_LINUX || REX_PLATFORM_ANDROID
++#include <sys/prctl.h>
++#endif
++
+ namespace rex::kernel::xboxkrnl {
+ using namespace rex::system;
+ using rex::runtime::current_ppc_context;
+@@ -389,6 +397,31 @@ u32 KeDelayExecutionThread_entry(u32 processor_mode, u32 alertable, mapped_u64 i
+ }
+ 
+ u32 NtYieldExecution_entry() {
++  // Guest code spins on SwitchToThread while it waits for work. After a long run
++  // of rapid yields from one thread, sleep briefly instead so idle spinners do not
++  // hold cores that threads doing real work need. Off unless
++  // SR_YIELD_BACKOFF_US is set; SR_YIELD_BACKOFF_STREAK and SR_YIELD_BACKOFF_GAP_US
++  // tune when it starts (see core/yield_backoff.h).
++  static const rex::thread::detail::YieldBackoffConfig backoff_config =
++      rex::thread::detail::YieldBackoffConfig::Parse(std::getenv("SR_YIELD_BACKOFF_US"),
++                                                     std::getenv("SR_YIELD_BACKOFF_STREAK"),
++                                                     std::getenv("SR_YIELD_BACKOFF_GAP_US"));
++  if (backoff_config.sleep_us) {
++    thread_local rex::thread::detail::YieldBackoff backoff;
++    const uint64_t now_ns = static_cast<uint64_t>(
++        std::chrono::duration_cast<std::chrono::nanoseconds>(
++            std::chrono::steady_clock::now().time_since_epoch())
++            .count());
++    if (const uint32_t sleep_us = backoff.OnYield(now_ns, backoff_config)) {
++#if REX_PLATFORM_LINUX || REX_PLATFORM_ANDROID
++      // The default 50 us timer slack would double a 50 us sleep.
++      thread_local const bool slack_set = (prctl(PR_SET_TIMERSLACK, 1000UL, 0, 0, 0), true);
++      (void)slack_set;
++#endif
++      rex::thread::Sleep(std::chrono::microseconds(sleep_us));
++      return X_STATUS_SUCCESS;
++    }
++  }
+   rex::thread::MaybeYield();
+   return X_STATUS_SUCCESS;
+ }
