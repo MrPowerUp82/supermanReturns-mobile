@@ -1,7 +1,7 @@
 # Checkpoint6 — renderer Vulkan nativo / filtro float32 v2
 
 Workspace: C:/Users/Gusta/Documents/outros-projetos/supermanReturns-mobile.
-PC read-only: ../superman_returns_recomp, commit ae5107814a56. Branch codex/resume-native-vulkan, HEAD c082611; correções abaixo ainda não commitadas.
+PC read-only: ../superman_returns_recomp, commit ae5107814a56. Branch codex/resume-native-vulkan; correções do renderer commitadas em bb5ce69.
 Usuário autorizou continuar e restaurar a build nativa. Não pedir novamente.
 
 ## Estado atual em 2026-10-08
@@ -37,8 +37,9 @@ BootAPK530fa...: PID31317, imagem upright, mas generation1855 de swapchain;
 parado, settings restaurados. Não usar como build estável.
 
 ATUALMENTE INSTALADO: APK659c0067... com política SUBOPTIMAL e correção gamma.
-PIDgame1565 em execução, log .tools/composition-boot.log. Camada externa ativa (enable_gpu_debug_layers1,
-gpu_debug_app=.native, VK_LAYER_KHRONOS_validation).
+PIDgame1565 foi encerrado após a coleta, log .tools/composition-boot.log.
+Camada Khronos estava ativa durante o teste; settings globais restaurados:
+enable_gpu_debug_layers0, gpu_debug_app/layers/layer_app ausentes.
 Log confirmou present=1000001003 (SUBOPTIMAL) e intentional_wsi_rotation1,
 swapchain generation1. No encerramento do teste, restaurar settings conforme
 .tools/filter-validation-settings-backup.json: enable0 e demais chaves ausentes.
@@ -48,20 +49,30 @@ APK COM GAMMA instalado com sucesso. Logs
 Loading Superbreath e título upright, sem posterização anterior. Novo jogo chegou
 a Metropolis; movimento e câmera touch responderam, com cores plausíveis comparadas
 qualitativamente à referência PC. Coleta600s ativa sessão4449, diretório
-.tools/native-float-validation. Voo e pouso por Y observados. Pause Menu viaSTART,
+.tools/native-float-validation terminou600.81s. Voo e pouso por Y observados. Pause Menu viaSTART,
 HOME/retorno preservaram PID1565, A retomou. Generation2 corresponde ao retorno
 da surface. Ainda faltam combate e qualidade áudio. Captura áudio output18.82s
 não silenciosa (média-39.8dB/pico-25.4dB); captura playback durante pausa silenciosa.
 Revisão agregada sem regressão concreta; resumo de evidências atualizado a pedido.
+Coletor rejeitou linhas epoch com9espaços iniciais; teste RED/GREEN6tests,
+regex corrigida e revisada. summary.json original preservado; counter-readback.json
+separado confirma360->720,930529draws adicionais,0.748swapsguest/s (não apresentação).
+PSS3050233->3722753KB, pico3734355KB. Nenhum VUID ou fatal signal no intervalo.
+Não marcar600s como aceitação final: crescimento de memória e desempenho pendentes.
+Perfil15s/.tools/composition-perf.{data,txt}:4456amostras,0perdidas; hotspots
+FGGameRender QueryRegionInfo, parsing de memória, guest/audio e sched_yield.
+Thermal Status3 observado. Próxima execução após resfriar, sem camada, para
+comparação de desempenho e investigação de retenção; depois combate/áudio.
 Copiar runtime fresco após relink antes de assemble, como no comando atual.
 Hashes completos e histórico: docs/evidence/s22-native-float-filter-2026-10-07.md.
 
 ## Próximos passos
 
-1. Acompanhar boot gamma PID1565 com camada e confirmar chegada ao menu.
-2. Confirmar cores na cidade, ausência de VUID e recriações repetidas.
-3. Comparar referência PC e entrar na cidade; testar movimento/câmera/voo/pouso/combate,
-   áudio, pausa/fundo/retorno e600segundos. Sem PASS funcional até esses gates.
+1. Reabrir APK659c após resfriar e coletar perfil sem camada, preservando ASTs,
+   resolução guest, draws/efeitos e biblioteca v2. Confirmar hotspots antes de corrigir.
+2. Investigar crescimento de memória e comparar mesma rota fria/aquecida.
+3. Completar combate e qualidade áudio; comparar mesmo enquadramento PC e repetir
+   coletor corrigido600s. Sem PASS funcional até esses gates.
 4. Atualizar evidências/checkpoint e commitar somente código/docs/testes/patches;
    excluir .superpowers, APKs, biblioteca, logs/dumps e dados comerciais.
 

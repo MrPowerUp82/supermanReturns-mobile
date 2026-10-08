@@ -12,8 +12,10 @@ verificados por readback em3alocações (teto32). Contrato de entrada e92testes
 Vulkan passaram; filtro/cache foram repetidos. Corrigidas orientação,
 recriação repetida por SUBOPTIMAL e sobrescrita da LUT gamma. O compositor real
 passou1024comparações GPU. APK659c0067 chegou a Metropolis no S22; movimento
-e câmera responderam ao touch. Voo, pouso, combate, áudio e ciclo de vida
-seguem em validação; a coleta de600segundos está em andamento.
+e câmera responderam ao touch, assim como voo, pouso, pausa e retorno do app.
+Captura600.81s concluída sem crash observado; parser corrigido após RED/GREEN6tests.
+Reanálise do log:0.748swapsguest/s com camada, PSS até3734355KB. Isso não aprova
+desempenho ou ausência de retenção. Combate e qualidade áudio ainda pendentes.
 **Gameplay ainda não aprovada.** Ver
 [relatório atual](evidence/s22-native-float-filter-2026-10-07.md).
 

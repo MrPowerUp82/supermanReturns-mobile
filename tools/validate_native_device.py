@@ -112,7 +112,7 @@ def collect(adb, duration, output, clock=time, sample_interval=60):
         if path.exists():
             text = path.read_text(encoding='utf-8', errors='replace')
             frames = [(float(t), int(f), int(d)) for t, f, d in re.findall(
-                r'^(\d+(?:\.\d+)?)\s+.*renderer=pc-native-vulkan frame=(\d+).*?draws=(\d+)', text, re.M)]
+                r'^[ \t]*(\d+(?:\.\d+)?)\s+.*renderer=pc-native-vulkan frame=(\d+).*?draws=(\d+)', text, re.M)]
             if len(frames) >= 2 and frames[-1][0] > frames[0][0] and frames[-1][1] >= frames[0][1]:
                 summary['fps'] = round((frames[-1][1] - frames[0][1]) / (frames[-1][0] - frames[0][0]), 3)
                 summary['draw_delta'] = frames[-1][2] - frames[0][2]

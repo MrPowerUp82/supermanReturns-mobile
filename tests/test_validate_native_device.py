@@ -21,16 +21,18 @@ class Logs:
 
 
 class Adb:
-    def __init__(self, clock, restart=False, stopped=False, quiet=False):
+    def __init__(self, clock, restart=False, stopped=False, quiet=False, padded=False):
         self.clock, self.restart, self.stopped, self.quiet = clock, restart, stopped, quiet
+        self.padded = padded
     def pid(self):
         return None if self.stopped else ('222' if self.restart and self.clock.now else '111')
     def start_logs(self, path, pid):
         if self.quiet:
             path.write_text('')
             return Logs()
-        path.write_text('100.0 I renderer=pc-native-vulkan frame=120 hooks=9 packets=50 draws=20\n'
-                        '102.0 I renderer=pc-native-vulkan frame=180 hooks=19 packets=90 draws=40\n')
+        prefix = '         ' if self.padded else ''
+        path.write_text(prefix + '100.0 I renderer=pc-native-vulkan frame=120 hooks=9 packets=50 draws=20\n'
+                        + prefix + '102.0 I renderer=pc-native-vulkan frame=180 hooks=19 packets=90 draws=40\n')
         return Logs()
     def memory(self, pid): return 'TOTAL PSS: 12345\n Graphics: 6789\n'
     def exit_info(self): return 'No exit records'
@@ -76,6 +78,12 @@ class CollectorTests(unittest.TestCase):
         result = self.collect(quiet=True)
         self.assertFalse(result['measurement_complete'])
         self.assertEqual(result['status'], 'no_native_frames')
+    def test_android_epoch_padding_preserves_native_counter_measurement(self):
+        result = self.collect(padded=True)
+        self.assertTrue(result['measurement_complete'])
+        self.assertEqual(result['fps'], 30.0)
+        self.assertEqual(result['draw_delta'], 20)
+        self.assertFalse(result['gameplay_verified'])
 
 
 if __name__ == '__main__': unittest.main()

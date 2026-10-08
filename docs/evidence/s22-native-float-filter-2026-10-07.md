@@ -10,7 +10,7 @@ convertidas para float16. A biblioteca v2 deve acompanhar o novo APK.
 APK659c0067 e biblioteca v2 instalados. O boot PID1565 chegou a Metropolis
 com camada Khronos carregada; movimento, câmera, voo, pouso, pausa e retorno
 do app observados. Cores e orientação corrigidas. Combate e qualidade do áudio
-ainda não aprovados; coleta600s em andamento. O crash descrito a seguir pertence
+ainda não aprovados; captura600s concluída com limitações abaixo. O crash descrito a seguir pertence
 à build anterior e foi superado pelos patches locais.
 
 Em 2026-10-08, após restauração autorizada do pacote e dados, LLDB capturou uma
@@ -213,3 +213,26 @@ foi silenciosa; não aprova áudio. Segunda captura output durante cena contém
 18.82s de áudio não silencioso (média-39.8dB, pico-25.4dB). Isso confirma sinal,
 sem aprovar qualidade auditiva. FFmpeg avisou timestamps não monotônicos em
 uma passagem; logs APU também registram gaps, ainda a investigar.
+
+## Captura de600segundos e limites
+
+Mesmo PID1565 durante600.81s,11amostras de memória. PSS3050233->3722753KB,
+pico3734355KB; Graphics1310524->1546188KB. A memória cresceu durante a sessão,
+embora as últimas amostras se aproximem de um platô; não prova ausência de retenção.
+Sem VUID ou fatal signal no log do intervalo. Inclui loading, ações, pausa/fundo,
+idle e perfil curto de CPU. Não equivale a600s de combate ou aprovação funcional.
+
+O relatório original summary.json marcou no_native_frames por um defeito do
+parser: logcat epoch Android preenche o início da linha com espaços. Regressão
+RED/GREEN6tests protege o padding e mantém as rejeições de ausência de quadros,
+troca de PID e falta de fonte; revisão sem achados. O relatório original foi
+preservado. Reanálise privada counter-readback.json encontrou quatro amostras,
+frame360->720,draws383315->1313844 e0.748swapsguest/s. Esse contador não mede
+apresentação no display, nem representa desempenho sem camada ou cache aquecido.
+
+Perfil simpleperf15s/cpu-clock99Hz:4456amostras,0perdidas. QueryRegionInfo,
+parsing de memória, guest/audio e sched_yield aparecem entre os hotspots.
+Thermal Status3 observado. Perfil e logs privados composition-perf.{data,txt},
+composition-{top,thermal}.txt. Investigar antes de otimizar; sem alterar draws,
+efeitos, float32 ou resolução. Jogo encerrado após coleta; settings GPU globais
+restaurados e conferidos (enable0, demais chaves ausentes). APK e dados preservados.

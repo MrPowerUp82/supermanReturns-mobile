@@ -110,9 +110,9 @@ estar verificada e o teste GPU estar aprovado.
 
 **Interfaces:** `prepare_native_shaders.ps1 -RecompRoot <PC> -Install -Device RXCWB05KQMX -Package org.supermanreturns.mobile.native` usa o snapshot v2. Registrar hash das ferramentas, helper, common, ABI, fonte e biblioteca; runtime inicia somente com biblioteca compatível.
 
-- [ ] Integrar preparação privada no script de shaders, incluindo revisão do contrato na proveniência e identidade do cache. Gerar biblioteca inteira com as ferramentas PC copiadas/adaptadas e verificar independentemente. Zero falha de shader utilizado; não usar `-AllowIncomplete` para aprovar boot.
-- [ ] Build/link completo `tools/build_game.ps1 -RecompRoot <PC>` e `tools/build.ps1 -NativeSideBySide`; exigir lint, assinatura, zipalign e ELF16KB. Confirmar PC sem alterações.
-- [ ] Instalar APK com `adb install -r` e biblioteca v2. Abrir launcher, localizar botão pelo estado atual da UI e repetir o boot. Registrar se o pacote 34 foi superado e diagnosticar a primeira falha nova antes de alterar outro comportamento.
+- [x] Integrar preparação privada no script de shaders, incluindo revisão do contrato na proveniência e identidade do cache. Gerar biblioteca inteira com as ferramentas PC copiadas/adaptadas e verificar independentemente. Zero falha de shader utilizado; não usar `-AllowIncomplete` para aprovar boot.
+- [x] Build/link completo `tools/build_game.ps1 -RecompRoot <PC>` e `tools/build.ps1 -NativeSideBySide`; exigir lint, assinatura, zipalign e ELF16KB. Confirmar PC sem alterações.
+- [x] Instalar APK com `adb install -r` e biblioteca v2. Abrir launcher, localizar botão pelo estado atual da UI e repetir o boot. Registrar se o pacote 34 foi superado e diagnosticar a primeira falha nova antes de alterar outro comportamento.
 - [ ] Reexecutar referência visual PC versus S22 e roteiro original: cidade, movimento/câmera, voo/pouso, combate, áudio, pausa/fundo/retorno. Comparar imagem antes de otimizar.
 - [ ] Coletar 600 segundos com `tools/validate_native_device.ps1 -Device RXCWB05KQMX -Package org.supermanreturns.mobile.native -DurationSeconds 600 -OutputDir .tools/native-float-validation`; investigar crescimento de memória e medir execução fria/aquecida. Contador de swaps não é timing de apresentação.
 - [ ] Executar revisão independente do conjunto final conforme o método Native já escolhido; corrigir problemas com testes. Registrar hashes, resultados e limitações em evidências e checkpoint. Não chamar boot, readback ou HUD de gameplay PASS.
