@@ -13,7 +13,7 @@ try {
         $runtime=Join-Path $root '.references/rexglue-sdk/out/linux-arm64/librexruntime.so'
         cmake -S (Join-Path $root 'native/runtime-tests') -B $build -G Ninja "-DCMAKE_TOOLCHAIN_FILE=$sdk/ndk/27.2.12479018/build/cmake/android.toolchain.cmake" "-DCMAKE_MAKE_PROGRAM=$sdk/cmake/3.22.1/bin/ninja.exe" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-33 -DANDROID_STL=c++_shared -DCMAKE_BUILD_TYPE=Release "-DSR_RUNTIME_LIBRARY=$runtime"
         if($LASTEXITCODE -ne 0){throw 'Runtime test CMake configuration failed.'}
-        $targets=@('test_proc_maps','test_region_query')
+        $targets=@('test_proc_maps','test_region_query','test_write_watch')
         cmake --build $build --target @targets
         if($LASTEXITCODE -ne 0){throw 'Runtime test compilation failed.'}
         $adb=Join-Path $sdk 'platform-tools/adb.exe'

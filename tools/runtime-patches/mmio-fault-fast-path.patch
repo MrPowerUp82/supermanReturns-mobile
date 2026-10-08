@@ -1,0 +1,73 @@
+diff --git a/src/system/mmio_handler.cpp b/src/system/mmio_handler.cpp
+index 2b93005..d189fdf 100644
+--- a/src/system/mmio_handler.cpp
++++ b/src/system/mmio_handler.cpp
+@@ -402,25 +402,31 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
+     }
+   }
+   if (!range) {
+-    // Recheck if the pages are still protected (race condition - another thread
+-    // clears the watch we just hit).
+-    // Do this under the lock so we don't introduce another race condition.
++    // The address is not found within any range, so either a write watch or an
++    // actual access violation.
++    //
++    // Every watched-page fault lands here, so the common case must not query the
++    // host protection: QueryProtect on Linux/Android parses /proc/self/maps, which
++    // grows with the number of mappings in the process. The callback already
++    // knows from its own watch state whether the page is still watched, so ask it
++    // first and only fall back to the host query when it declines.
++    {
++      auto lock = global_critical_region_.Acquire();
++      if (access_violation_callback_ &&
++          access_violation_callback_(std::move(lock), access_violation_callback_context_,
++                                     fault_host_address, is_write)) {
++        return true;
++      }
++    }
++    // Declined: either an actual access violation or a race (another thread
++    // cleared the watch we just hit). Recheck if the pages are still protected,
++    // under the lock so we don't introduce another race condition.
+     auto lock = global_critical_region_.Acquire();
+     memory::PageAccess cur_access;
+     size_t page_length = memory::page_size();
+     memory::QueryProtect(fault_host_address, page_length, cur_access);
+-    if (cur_access != memory::PageAccess::kNoAccess &&
+-        (!is_write || cur_access != memory::PageAccess::kReadOnly)) {
+-      // Another thread has cleared this watch. Abort.
+-      return true;
+-    }
+-    // The address is not found within any range, so either a write watch or an
+-    // actual access violation.
+-    if (access_violation_callback_) {
+-      return access_violation_callback_(std::move(lock), access_violation_callback_context_,
+-                                        fault_host_address, is_write);
+-    }
+-    return false;
++    return cur_access != memory::PageAccess::kNoAccess &&
++           (!is_write || cur_access != memory::PageAccess::kReadOnly);
+   }
+ 
+   auto rip = ex->pc();
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+index 1aef610..76af39a 100644
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -608,6 +608,17 @@ bool Memory::AccessViolationCallback(std::unique_lock<std::recursive_mutex> glob
+       size_t host_page_size = rex::memory::page_size();
+       uintptr_t page_base =
+           reinterpret_cast<uintptr_t>(host_address) & ~(uintptr_t(host_page_size - 1));
++      // The fault handler calls here before looking at the host protection, so a
++      // page that another thread has just unwatched arrives as well. That is not
++      // stale state: the faulting write can simply be retried.
++      size_t queried_length = host_page_size;
++      rex::memory::PageAccess host_access = rex::memory::PageAccess::kNoAccess;
++      if (rex::memory::QueryProtect(reinterpret_cast<void*>(page_base), queried_length,
++                                    host_access) &&
++          (host_access == rex::memory::PageAccess::kReadWrite ||
++           host_access == rex::memory::PageAccess::kExecuteReadWrite)) {
++        return true;
++      }
+       if (rex::memory::Protect(reinterpret_cast<void*>(page_base), host_page_size,
+                                rex::memory::PageAccess::kReadWrite, nullptr)) {
+         REXSYS_WARN(
